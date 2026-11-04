@@ -94,7 +94,7 @@ function shell(): string {
         <button class="btn icon max-sm:hidden" id="btn-theme" title="Theme" aria-label="Switch theme">${icon("moon")}</button>
         <a class="btn primary hidden sm:inline-flex" href="#/upload">${icon("upload")}<span>Upload</span></a>
       </header>
-      <div id="ptr" style="top:calc(4rem + env(safe-area-inset-top))" class="pointer-events-none fixed left-1/2 z-40 -translate-x-1/2 -translate-y-12 opacity-0"><span class="card grid size-10 place-items-center rounded-full">${icon("refresh", "size-5 text-accent")}</span></div>
+      <div id="ptr" aria-hidden="true" style="top:calc(4rem + env(safe-area-inset-top))"><svg viewBox="0 0 40 40"><circle class="ptr-track" cx="20" cy="20" r="11"/><circle class="ptr-arc" cx="20" cy="20" r="11" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100" transform="rotate(-90 20 20)"/></svg></div>
       <main id="view" class="scroll-thin flex-1 overflow-y-auto px-4 pt-4 pb-28 lg:px-6 lg:pt-6 lg:pb-8"></main>
     </div>
   </div>
@@ -176,15 +176,43 @@ export function reloadView(): void {
 }
 
 function pullToRefresh(): void {
+  // Like iOS and Android: only the indicator moves, the header and page stay put. It follows the
+  // finger with some resistance, draws a circle while pulling, and spins once let go past the mark.
   const main = $("#view");
   const ind = $("#ptr");
+  const arc = ind.querySelector<SVGCircleElement>(".ptr-arc")!;
+  const svg = ind.querySelector("svg")!;
+  const PULL = 72; // px of (resisted) pull that triggers a refresh
+  let startX = 0;
   let startY: number | null = null;
-  let dy = 0;
+  let pull = 0;
+  let busy = false;
+  const draw = (d: number) => {
+    const p = Math.min(1, d / PULL);
+    ind.style.transform = `translate(-50%, ${Math.min(d, PULL * 1.15) - 44}px) scale(${0.6 + p * 0.4})`;
+    ind.style.opacity = String(Math.min(1, p * 1.6));
+    arc.style.strokeDashoffset = String(100 - p * 85);
+    svg.style.transform = `rotate(${p * 200}deg)`;
+    ind.classList.toggle("ready", p >= 1);
+  };
+  const reset = () => {
+    ind.classList.add("back");
+    ind.classList.remove("ready", "spin");
+    ind.style.transform = "";
+    ind.style.opacity = "0";
+    svg.style.transform = "";
+    setTimeout(() => ind.classList.remove("back"), 260);
+  };
   main.addEventListener(
     "touchstart",
     (e) => {
-      startY = main.scrollTop <= 0 ? (e.touches[0]?.clientY ?? null) : null;
-      dy = 0;
+      if (busy || e.touches.length > 1 || main.scrollTop > 0) {
+        startY = null;
+        return;
+      }
+      startX = e.touches[0]!.clientX;
+      startY = e.touches[0]!.clientY;
+      pull = 0;
     },
     { passive: true },
   );
@@ -192,28 +220,38 @@ function pullToRefresh(): void {
     "touchmove",
     (e) => {
       if (startY == null) return;
-      dy = Math.max(0, (e.touches[0]?.clientY ?? 0) - startY);
-      const p = Math.min(1, dy / 80);
-      ind.style.opacity = String(p);
-      ind.style.transform = `translate(-50%, ${-48 + p * 64}px) rotate(${p * 270}deg)`;
+      const t = e.touches[0]!;
+      const dy = t.clientY - startY;
+      // A sideways swipe (charts, chips) or scrolling up is not a pull.
+      if (pull === 0 && (dy <= 0 || Math.abs(t.clientX - startX) > dy)) {
+        if (Math.abs(t.clientX - startX) > 8 || dy < -4) startY = null;
+        return;
+      }
+      if (main.scrollTop > 0) return;
+      pull = Math.max(0, dy) * 0.5; // resistance, as on iOS
+      draw(pull);
     },
     { passive: true },
   );
-  main.addEventListener("touchend", () => {
-    if (startY != null && dy > 80) {
-      ind.querySelector("svg")?.classList.add("spin");
+  const end = () => {
+    if (startY == null) return;
+    startY = null;
+    if (pull >= PULL && !busy) {
+      busy = true;
+      navigator.vibrate?.(8);
+      ind.classList.add("back", "spin");
+      ind.style.transform = `translate(-50%, ${PULL * 0.6 - 44}px)`;
+      arc.style.strokeDashoffset = "75";
       reloadView();
       setTimeout(() => {
-        ind.querySelector("svg")?.classList.remove("spin");
-        ind.style.opacity = "0";
-        ind.style.transform = "";
-      }, 700);
-    } else {
-      ind.style.opacity = "0";
-      ind.style.transform = "";
-    }
-    startY = null;
-  });
+        reset();
+        busy = false;
+      }, 800);
+    } else if (pull > 0) reset();
+    pull = 0;
+  };
+  main.addEventListener("touchend", end);
+  main.addEventListener("touchcancel", end);
 }
 
 // ---- live shell updates

@@ -92,6 +92,11 @@
 html,
 body {
   height: 100%;
+  /* The app has its own pull to refresh: the page itself never bounces or drags the header down. */
+  overscroll-behavior: none;
+}
+#view {
+  overscroll-behavior-y: contain;
 }
 
 body {
@@ -274,6 +279,11 @@ body::before {
       inset 0 1px 0 rgb(255 255 255 / 0.25),
       0 6px 16px -8px color-mix(in oklab, var(--accent) 80%, transparent);
   }
+  [data-theme="light"] .btn.primary {
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.25),
+      0 3px 8px -4px color-mix(in oklab, var(--accent) 50%, transparent);
+  }
   .btn.primary:is(:hover, :active) {
     background: linear-gradient(
       180deg,
@@ -291,8 +301,35 @@ body::before {
     @apply w-9 px-0;
   }
 
+  /* Text button (iOS "Edit"): accent text, a soft tint only while pressed or hovered. */
+  .link-btn {
+    @apply inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-sm font-medium transition-colors duration-200 select-none;
+    color: var(--accent);
+  }
+  .link-btn svg {
+    @apply size-4;
+  }
+  .link-btn.sm {
+    @apply -my-1 ml-1 h-6 px-2 text-xs;
+  }
+  .link-btn.sm svg {
+    @apply size-3.5;
+  }
+  .link-btn:active {
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+  }
+  @media (hover: hover) {
+    .link-btn:hover {
+      background: color-mix(in oklab, var(--accent) 10%, transparent);
+    }
+  }
+  @media (pointer: coarse) {
+    .link-btn {
+      @apply -mr-1 h-10;
+    }
+  }
   .input {
-    @apply h-10 w-full rounded-xl border border-transparent bg-panel-2 px-3 text-sm text-ink outline-none placeholder:text-ink-3 focus:border-accent focus:ring-2 focus:ring-accent/25;
+    @apply h-10 w-full rounded-xl border border-transparent bg-panel-2 px-3 text-sm text-ink outline-none placeholder:text-ink-3 focus:border-accent/70 focus:ring-[3px] focus:ring-accent/12;
   }
   textarea.input {
     @apply h-auto py-2 font-mono text-xs;
@@ -588,9 +625,48 @@ body::before {
   }
 }
 
-/* Pull to refresh (phones) */
+/* Pull to refresh (phones): a small round chip under the header with a drawing circle. */
 #ptr {
-  transition: transform 0.2s;
+  @apply pointer-events-none fixed left-1/2 z-40 grid size-10 place-items-center rounded-full border border-line;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transform: translate(-50%, -44px) scale(0.6);
+  will-change: transform, opacity;
+}
+#ptr.back {
+  transition:
+    transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.25s;
+}
+#ptr svg {
+  @apply size-7;
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 2.6;
+}
+.ptr-track {
+  stroke: var(--panel-2);
+}
+.ptr-arc {
+  stroke: var(--accent);
+}
+/* Past the mark: the chip pops slightly, telling the finger it can let go. */
+#ptr.ready {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+}
+#ptr.spin svg {
+  animation: spin-slow 0.7s linear infinite;
+}
+
+/* Focus: no outline after a tap or click (phones would draw a square glow around the
+   tapped box), a rounded accent ring only for keyboard users. */
+:where(a, button, label, select, [tabindex], [role="button"]):focus:not(:focus-visible) {
+  outline: none;
+}
+:where(a, button, label, [tabindex], [role="button"]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -641,21 +717,25 @@ body::before {
   @apply relative flex items-center justify-center py-1.5 select-none;
 }
 .tab-fab > span {
-  @apply relative grid size-12 place-items-center overflow-hidden rounded-2xl text-white shadow-lg transition-transform duration-200;
-  background: linear-gradient(160deg, color-mix(in oklab, var(--accent) 80%, white), var(--accent));
+  @apply relative grid size-12 place-items-center overflow-hidden rounded-full text-white transition-[transform,filter] duration-200;
+  background: linear-gradient(160deg, color-mix(in oklab, var(--accent) 82%, white), var(--accent));
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.3),
-    0 8px 22px -8px color-mix(in oklab, var(--accent) 90%, transparent);
+    inset 0 1px 0 rgb(255 255 255 / 0.28),
+    0 6px 14px -6px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+[data-theme="light"] .tab-fab > span {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.28),
+    0 4px 10px -4px color-mix(in oklab, var(--accent) 45%, transparent);
 }
 .tab-fab:active > span {
   transform: scale(0.93);
   filter: brightness(1.08);
   transition-duration: 0.08s;
 }
+/* On the Upload page: a slightly deeper blue, no halo around it. */
 .tab-fab[aria-current] > span {
-  box-shadow:
-    0 0 0 3px color-mix(in oklab, var(--accent) 35%, transparent),
-    0 8px 22px -8px color-mix(in oklab, var(--accent) 90%, transparent);
+  filter: saturate(1.1) brightness(0.94);
 }
 @keyframes tab-pop {
   40% {
@@ -883,11 +963,11 @@ body::before {
     0 6px 10px -6px color-mix(in oklab, var(--s1) 70%, transparent);
 }
 /* Ring: a recessed track and a lifted, glowing arc. */
-.ring-track {
-  filter: drop-shadow(0 1px 0 var(--edge));
-}
-.ring-arc {
+.ring-glow {
   filter: drop-shadow(0 4px 8px color-mix(in oklab, var(--accent) 45%, transparent));
+}
+[data-theme="light"] .ring-glow {
+  filter: drop-shadow(0 3px 6px color-mix(in oklab, var(--accent) 28%, transparent));
 }
 .heat rect {
   filter: drop-shadow(0 1px 0.5px rgb(0 0 0 / 0.18));

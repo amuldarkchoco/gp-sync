@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.1
+
+- Overview: Customize is now a small "Edit" link (next to the page subtitle on wider screens,
+  above the cards on phones) instead of a big button on top of the page
+- Overview: the backup ring's glow no longer shows a cut-off square edge (light mode), and an
+  empty ring no longer shows a dot
+- Upload on Android: "Take photo" and "Record video" are separate buttons, so the camera opens
+  (one button asking for both opened nothing on Android); iPhone keeps one button
+- Upload: "Where files go" works smoothly on phones: choosing or adding a folder updates the card
+  in place, the Add button no longer gets squeezed, Enter adds the folder
+- Phones: new pull to refresh: a small chip with a drawing circle follows your finger; the
+  header and page no longer get dragged down
+- Phone tab bar: the Upload button is a clean circle with a soft shadow (no square halo)
+- Light mode: softer glows on blue buttons and text boxes; no outline left on buttons after a
+  tap (keyboard users still get a clear focus ring)
+- History: the upload time card no longer mentions an old version number
+- README: more screenshots (phone and desktop)
+
 ## 1.0.0
 
 First release of GP Sync:

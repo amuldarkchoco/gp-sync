@@ -110,7 +110,7 @@ function renderTotals(t: Totals): void {
       label: "Upload time",
       value: duration((t.photo_ms + t.video_ms) / 1000),
       ic: "timer",
-      sub: "Measured since 1.7",
+      sub: "Time spent sending files",
     }),
     tile({
       label: "Best day",

@@ -286,16 +286,26 @@ function render(): void {
   existing.forEach((r) => r.remove());
 }
 
-function folderPicker(): string {
+function folderOptions(): string {
   const names = [...new Set([...(info?.folders ?? []), ...newFolders])].sort();
+  return `<option value="">By date (year / month)</option>
+    ${names.map((n) => `<option value="${esc(n)}" ${n === folder ? "selected" : ""}>${esc(n)}</option>`).join("")}
+    <option value="__new">New folder…</option>`;
+}
+
+function folderPicker(): string {
   return `<label class="block"><span class="mb-1.5 block text-sm font-medium">Save into</span>
-    <select class="input" id="up-folder">
-      <option value="">By date (year / month)</option>
-      ${names.map((n) => `<option value="${esc(n)}" ${n === folder ? "selected" : ""}>${esc(n)}</option>`).join("")}
-      <option value="__new">New folder…</option>
-    </select></label>
-    <div class="mt-2 hidden gap-2" id="up-new"><input class="input" id="up-new-name" maxlength="80" placeholder="e.g. Goa Trip"><button class="btn" id="up-new-ok">${icon("plus")}Add</button></div>
-    <p class="mt-1.5 text-xs text-ink-3">With albums turned on (Settings › Albums), a named folder becomes a Google Photos album.</p>`;
+    <select class="input" id="up-folder">${folderOptions()}</select></label>
+    <form class="mt-2 hidden items-center gap-2" id="up-new">
+      <input class="input min-w-0 flex-1" id="up-new-name" maxlength="80" placeholder="Folder name, e.g. Goa Trip" enterkeyhint="done" autocomplete="off">
+      <button class="btn shrink-0" type="submit">${icon("plus")}Add</button>
+    </form>
+    <p class="mt-1.5 text-xs text-ink-3">With albums on (Settings › Albums), a named folder becomes a Google Photos album.</p>`;
+}
+
+/** The folder line at the top of the card, redrawn when the choice changes. */
+function folderLine(): string {
+  return `<span class="grid size-11 shrink-0 place-items-center rounded-xl bg-panel-2 text-ink-2">${icon("folder", "size-5")}</span><div class="min-w-0"><div class="truncate font-medium">${esc(info?.folder || "Upload folder")}${folder ? ` / ${esc(folder)}` : ""}</div><div class="text-xs text-ink-3">${folder ? "Named folder" : "Sorted into year and month folders"}</div></div>`;
 }
 
 async function loadInfo(): Promise<void> {
@@ -304,30 +314,44 @@ async function loadInfo(): Promise<void> {
   if (!box) return;
   html(
     box,
-    `<div class="flex items-center gap-3"><span class="grid size-11 place-items-center rounded-xl bg-panel-2 text-ink-2">${icon("folder", "size-5")}</span><div class="min-w-0"><div class="truncate font-medium">${esc(info.folder || "Upload folder")}${folder ? ` / ${esc(folder)}` : ""}</div><div class="text-xs text-ink-3">${folder ? "Named folder" : "Sorted into year and month folders"}</div></div></div>
-     <div class="flex flex-wrap gap-1.5">${info.ready ? badge("Ready", "good", "ok") : badge("Not available", "bad", "error")}${info.synced ? badge("Backed up to Google", "good", "cloud") : badge("Folder not backed up", "warn", "warn", "Turn on Photos in Settings › Folders")}${badge(`${bytes(info.free)} free`, "", "disk")}${badge("Resumes if cut off", "info", "refresh")}</div>
+    `<div class="flex items-center gap-3" id="up-where">${folderLine()}</div>
+     <div class="flex flex-wrap gap-1.5">${info.ready ? badge("Ready", "good", "ok") : badge("Not available", "bad", "error")}${info.synced ? badge("Backed up to Google", "good", "cloud") : badge("Folder not backed up", "warn", "warn", "Turn on Photos in Settings › Folders")}${badge(`${bytes(info.free)} free`, "", "disk")}<span class="pointer-coarse:hidden">${badge("Resumes if cut off", "info", "refresh")}</span></div>
      ${info.ready ? folderPicker() : `<p class="text-sm text-ink-3">The upload folder isn't mounted. With Docker, mount a folder at <code>/uploads</code> (on Umbrel, update the app).</p>`}`,
   );
   if (!info.ready) $("#drop").classList.add("pointer-events-none", "opacity-50");
   const sel = document.getElementById("up-folder") as HTMLSelectElement | null;
-  sel?.addEventListener("change", () => {
+  const form = document.getElementById("up-new") as HTMLFormElement | null;
+  if (!sel || !form) return;
+  const nameBox = $<HTMLInputElement>("#up-new-name");
+  // Changes are drawn in place: no reload, so the phone's picker and keyboard don't jump.
+  const choose = (name: string) => {
+    folder = name;
+    sel.innerHTML = folderOptions();
+    sel.value = name;
+    html($("#up-where"), folderLine());
+  };
+  sel.addEventListener("change", () => {
     if (sel.value === "__new") {
-      $("#up-new").classList.replace("hidden", "flex");
-      $<HTMLInputElement>("#up-new-name").focus();
+      form.classList.replace("hidden", "flex");
+      nameBox.focus();
     } else {
-      folder = sel.value;
-      $("#up-new").classList.replace("flex", "hidden");
-      void loadInfo();
+      form.classList.replace("flex", "hidden");
+      choose(sel.value);
     }
   });
-  document.getElementById("up-new-ok")?.addEventListener("click", () => {
-    const name = $<HTMLInputElement>("#up-new-name")
-      .value.trim()
-      .replace(/[\\/<>:"|?*]/g, "");
-    if (!name) return;
-    folder = name;
-    newFolders.push(name);
-    void loadInfo();
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = nameBox.value.trim().replace(/[\\/<>:"|?*]/g, "");
+    if (!name) {
+      nameBox.focus();
+      return;
+    }
+    if (!newFolders.includes(name)) newFolders.push(name);
+    nameBox.value = "";
+    nameBox.blur();
+    form.classList.replace("flex", "hidden");
+    choose(name);
+    toast(`New files go into “${name}”`);
   });
 }
 
@@ -351,9 +375,27 @@ async function loadShared(): Promise<void> {
   }
 }
 
+// The camera: iPhone offers photo and video from one input. Android's Chrome opens nothing (or
+// only the gallery) when one camera input asks for both, so Android gets one input for each.
+const ANDROID = /android/i.test(navigator.userAgent);
+
+function cameraButtons(): string {
+  const cls = "btn hidden pointer-coarse:inline-flex";
+  return ANDROID
+    ? `<label for="shoot" class="${cls}">${icon("camera")}Take photo</label><label for="shoot-video" class="${cls}">${icon("record")}Record video</label>`
+    : `<label for="shoot" class="${cls}">${icon("camera")}Take photo or video</label>`;
+}
+
+function cameraInputs(): string {
+  return ANDROID
+    ? `<input type="file" id="shoot" class="sr-only" accept="image/*" capture="environment">
+       <input type="file" id="shoot-video" class="sr-only" accept="video/*" capture="environment">`
+    : `<input type="file" id="shoot" class="sr-only" accept="image/*,video/*" capture="environment">`;
+}
+
 /** Only where it can work: Android's Share menu lists the installed app on HTTPS. */
 function shareTip(): string {
-  if (!/android/i.test(navigator.userAgent)) return "";
+  if (!ANDROID) return "";
   return `<p class="flex gap-2">${icon("upload", "mt-0.5 size-4 shrink-0 text-ink-3")}<span>${
     isSecureContext
       ? "Installed as an app, GP Sync appears in the gallery's <b>Share</b> menu: share photos straight to it."
@@ -395,11 +437,11 @@ const upload: View = {
           <div class="flex flex-wrap justify-center gap-2">
             <!-- Labels open their file input natively: works in every phone browser and the installed app. -->
             <label for="pick" class="btn primary">${icon("library")}Choose files</label>
-            <label for="shoot" class="btn hidden pointer-coarse:inline-flex" id="cam">${icon("camera")}Take photo or video</label>
+            ${cameraButtons()}
           </div>
         </div>
         <input type="file" id="pick" class="sr-only" multiple accept="image/*,video/*">
-        <input type="file" id="shoot" class="sr-only" accept="image/*,video/*" capture="environment">
+        ${cameraInputs()}
         <div class="border-t border-line px-4 py-3" id="up-summary"></div>
       </section>
 
@@ -425,15 +467,12 @@ const upload: View = {
       </section>
     </div>`;
     const pick = $<HTMLInputElement>("#pick");
-    const shoot = $<HTMLInputElement>("#shoot");
-    pick.addEventListener("change", () => {
-      if (pick.files) add(pick.files);
-      pick.value = "";
-    });
-    shoot.addEventListener("change", () => {
-      if (shoot.files) add(shoot.files);
-      shoot.value = "";
-    });
+    for (const input of el.querySelectorAll<HTMLInputElement>("input[type=file]")) {
+      input.addEventListener("change", () => {
+        if (input.files?.length) add(input.files);
+        input.value = "";
+      });
+    }
     const drop = $("#drop");
     // A tap on the empty part of the box opens the picker too. Buttons are labels that open
     // their input themselves, so their taps are left alone (cancelling them stops the picker).

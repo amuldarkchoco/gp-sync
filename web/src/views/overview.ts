@@ -1,5 +1,5 @@
 import { get, tz, type History, type Insights, type Status } from "../lib/api";
-import { heatLegend, heatmap, ring, sparkline } from "../lib/charts";
+import { heatLegend, heatmap, ring, setRing, sparkline } from "../lib/charts";
 import { $, $$, esc, html } from "../lib/dom";
 import { ago, bytes, clock, duration, fileName, ms, num, pct, speed } from "../lib/format";
 import { icon } from "../lib/icons";
@@ -275,7 +275,11 @@ const overview: View = {
   subtitle: "Everything at a glance",
   mount(el) {
     el.innerHTML = `
-    <div class="mb-3 flex items-center justify-end gap-2"><button class="btn sm" id="ov-custom">${icon("settings")}Customize</button></div>
+    <!-- A quiet "Edit" link like iOS lists: there when wanted, no button weight on top of the page. -->
+    <div class="-mt-1 mb-2 flex items-center justify-between gap-2 sm:hidden">
+      <span class="label">Everything at a glance</span>
+      <button class="link-btn" data-ov-custom aria-label="Customize overview">${icon("sliders")}Edit</button>
+    </div>
     <div class="grid grid-flow-row-dense grid-cols-1 gap-4 lg:grid-cols-12" id="ov-grid">
       <section class="card relative overflow-hidden p-5 lg:col-span-5 xl:col-span-4" id="ov-hero" data-card="ov-hero">
         <div class="pointer-events-none absolute -top-20 -right-20 size-64 rounded-full blur-3xl" style="background:radial-gradient(circle,var(--glow-1),transparent 70%)"></div>
@@ -328,7 +332,12 @@ const overview: View = {
       </section>
     </div>`;
     applyLayout();
-    $("#ov-custom").addEventListener("click", openCustomize);
+    // Wider screens show the page subtitle in the header: the Edit link sits right after it.
+    $("#page-sub").insertAdjacentHTML(
+      "beforeend",
+      ` <button class="link-btn sm" data-ov-custom aria-label="Customize overview">${icon("sliders")}Edit</button>`,
+    );
+    $$("[data-ov-custom]").forEach((b) => b.addEventListener("click", openCustomize));
     $("#ov-now").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest<HTMLElement>("[data-now]");
       if (b) document.getElementById(b.dataset.now === "resume" ? "btn-pause" : "btn-sync")?.click();
@@ -347,10 +356,7 @@ const overview: View = {
     last = s;
     const lib = s.library;
     const p = pct(lib.synced_files, lib.files);
-    $("#ov-hero circle:last-of-type").setAttribute(
-      "stroke-dashoffset",
-      String(2 * Math.PI * ((148 - 12) / 2) * (1 - p / 100)),
-    );
+    setRing($("#ov-hero .ring-box svg"), p);
     $("#ov-pct").textContent = lib.files ? `${p >= 99.95 || p === 0 ? p.toFixed(0) : p.toFixed(1)}%` : "–";
     const left = lib.files - lib.synced_files;
     const eta = etaText(s);

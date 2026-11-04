@@ -40,10 +40,21 @@ Back up any folder on your server, NAS, Immich library or Umbrel in original qua
 </table>
 
 <div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/phone-dark.webp">
-  <img src="docs/phone-light.webp" alt="GP Sync on a phone" width="260">
-</picture>
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/phone-overview-dark.webp"><img src="docs/phone-overview-light.webp" alt="GP Sync on a phone: backup progress" width="32%"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/phone-upload-dark.webp"><img src="docs/phone-upload-light.webp" alt="GP Sync on a phone: upload from the gallery or camera" width="32%"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/phone-network-dark.webp"><img src="docs/phone-network-light.webp" alt="GP Sync on a phone: live network speed" width="32%"></picture>
+
+<br>
+
+<table>
+  <tr>
+    <td width="33%" align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/history-dark.webp"><img src="docs/history-light.webp" alt="History: what was backed up, day by day" width="100%"></picture><br><sub><b>History</b></sub></td>
+    <td width="33%" align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/insights-dark.webp"><img src="docs/insights-light.webp" alt="Insights: upload times, file sizes and patterns" width="100%"></picture><br><sub><b>Insights</b></sub></td>
+    <td width="33%" align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/network-dark.webp"><img src="docs/network-light.webp" alt="Network: live speed, Google response time and data used" width="100%"></picture><br><sub><b>Network</b></sub></td>
+  </tr>
+</table>
+
 </div>
 
 ## Install on Umbrel

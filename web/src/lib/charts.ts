@@ -303,17 +303,29 @@ export function sparkline(values: number[], color = "var(--s1)", h = 36): string
   </svg>`;
 }
 
-/** Progress ring. */
+/** Progress ring. The glow sits on an unrotated layer and may spill past the box, so it is
+ * never cut into a square edge; at 0% the arc is hidden (a round cap would leave a dot). */
 export function ring(percent: number, size = 160, stroke = 12): string {
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const p = Math.max(0, Math.min(100, percent));
-  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" class="-rotate-90" aria-hidden="true">
+  const mid = size / 2;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="overflow:visible" aria-hidden="true">
     <defs><linearGradient id="ringg" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/></linearGradient></defs>
-    <circle class="ring-track" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--panel-2)" stroke-width="${stroke}"/>
-    <circle class="ring-arc" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="url(#ringg)" stroke-width="${stroke}" stroke-linecap="round"
-      stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - p / 100)}" style="transition:stroke-dashoffset .6s ease"/>
+    <circle class="ring-track" cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="var(--panel-2)" stroke-width="${stroke}"/>
+    <g class="ring-glow"><circle class="ring-arc" cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="url(#ringg)" stroke-width="${stroke}" stroke-linecap="round" transform="rotate(-90 ${mid} ${mid})"
+      stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - p / 100)}" opacity="${p > 0 ? 1 : 0}" style="transition:stroke-dashoffset .6s ease,opacity .3s"/></g>
   </svg>`;
+}
+
+/** Move a ring made by ring() to a new percentage. */
+export function setRing(svg: Element | null, percent: number): void {
+  const arc = svg?.querySelector(".ring-arc");
+  if (!arc) return;
+  const c = Number(arc.getAttribute("stroke-dasharray"));
+  const p = Math.max(0, Math.min(100, percent));
+  arc.setAttribute("stroke-dashoffset", String(c * (1 - p / 100)));
+  arc.setAttribute("opacity", p > 0 ? "1" : "0");
 }
 
 /** Column chart in HTML: bars grow from the baseline with 4px rounded tops; hover highlights one bar. */
