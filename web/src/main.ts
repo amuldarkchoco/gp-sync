@@ -328,7 +328,8 @@ function haptic(): void {
 
 /** Touch feedback: a ripple from where the finger lands. */
 function ripples(): void {
-  const SEL = ".btn, .tab, .nav-item, a.card, .row.clickable, .seg button, figure[data-open]";
+  const SEL =
+    ".btn, .tab, .nav-item, .set-item, .set-tab, a.card, .row.clickable, .seg button, figure[data-open]";
   document.addEventListener(
     "pointerdown",
     (e) => {

@@ -8,15 +8,82 @@ import { setTheme, theme as currentTheme } from "../lib/theme";
 import { badge, cardHead, syncChips } from "../lib/ui";
 import type { View } from "./view";
 
-const SECTIONS: [string, string, IconName, string][] = [
-  ["sync", "Sync", "refresh", "Pause, hours and speed"],
-  ["accounts", "Google accounts", "users", "Connect and remove"],
-  ["folders", "Folders", "folder", "What is backed up where"],
-  ["albums", "Albums & duplicates", "library", "Organise in Google Photos"],
-  ["alerts", "Phone alerts", "bell", "ntfy and Telegram"],
-  ["app", "App & appearance", "phone", "Install, theme"],
-  ["api", "REST API", "code", "JSON endpoints"],
+// [key, title, icon, short line for the menu, icon tile color (iOS system colors), page intro]
+const SECTIONS: [string, string, IconName, string, string, string][] = [
+  [
+    "sync",
+    "Sync",
+    "refresh",
+    "Pause, hours and speed",
+    "#0a84ff",
+    "Pause backups, choose upload hours and limit the upload speed.",
+  ],
+  [
+    "accounts",
+    "Google accounts",
+    "users",
+    "Connect and remove",
+    "#5e5ce6",
+    "Connect up to 5 Google accounts. Removing one keeps its photos in Google Photos.",
+  ],
+  [
+    "folders",
+    "Folders",
+    "folder",
+    "What is backed up where",
+    "#ff9f0a",
+    "Choose which folders are backed up, and to which accounts.",
+  ],
+  [
+    "albums",
+    "Albums & duplicates",
+    "library",
+    "Organise in Google Photos",
+    "#ff375f",
+    "Sort uploads into Google Photos albums and find files you have twice.",
+  ],
+  [
+    "alerts",
+    "Phone alerts",
+    "bell",
+    "ntfy and Telegram",
+    "#ff453a",
+    "Get a message on your phone through ntfy or Telegram when something needs you.",
+  ],
+  [
+    "app",
+    "App & appearance",
+    "palette",
+    "Theme and install",
+    "#bf5af2",
+    "Choose how GP Sync looks and add it to your home screen.",
+  ],
+  [
+    "api",
+    "REST API",
+    "code",
+    "JSON endpoints",
+    "#8e8e93",
+    "Read status and statistics as JSON, with the same login as the dashboard.",
+  ],
 ];
+
+/** Small colored icon tile, like the iOS Settings list. */
+function tileIcon(ic: IconName, color: string, size = ""): string {
+  return `<span class="set-ic ${size}" style="--c:${color}">${icon(ic)}</span>`;
+}
+
+/** Title block at the top of each section. */
+function sectionHead(key: string): string {
+  const sec = SECTIONS.find(([k]) => k === key) ?? SECTIONS[0]!;
+  const [, title, ic, , color, intro] = sec;
+  return `<header class="set-head">${tileIcon(ic, color, "lg")}<div class="min-w-0"><h2 class="text-lg font-semibold tracking-tight">${esc(title)}</h2><p class="text-sm text-ink-3">${esc(intro)}</p></div></header>`;
+}
+
+/** One bar for a section's buttons: a short note on the left, actions on the right. */
+function actions(note: string, buttons: string): string {
+  return `<div class="set-actions xl:col-span-2"><span class="min-w-0 flex-1 text-xs text-ink-3">${note}</span><div class="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:justify-end">${buttons}</div></div>`;
+}
 
 let cfg: Settings | null = null;
 let section = "sync";
@@ -64,11 +131,11 @@ function hoursBar(): string {
 function sectionSync(s: Status | null): string {
   const presets = [0, 2, 5, 10, 20, 50];
   return `<div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-    <section class="card xl:col-span-2">${cardHead("Sync", "refresh")}
+    <section class="card xl:col-span-2">${cardHead("Status", "activity")}
       <div class="card-b flex flex-col gap-4 md:flex-row md:items-center">
         <div class="min-w-0 flex-1"><div class="flex flex-wrap gap-1.5" id="set-chips">${s ? syncChips(s) : ""}</div></div>
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="flex items-center gap-2 rounded-xl border border-line px-3 py-1.5 text-sm">Paused ${sw("set-pause", !!s?.paused)}</span>
+        <div class="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
+          <span class="col-span-2 flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-1.5 text-sm">Paused ${sw("set-pause", !!s?.paused)}</span>
           <button class="btn" id="set-scan">${icon("refresh")}Scan now</button>
           <button class="btn" id="set-retry">${icon("retry")}Retry failed${s?.counts.failed ? ` <span class="count bad">${s.counts.failed}</span>` : ""}</button>
         </div>
@@ -116,13 +183,13 @@ function sectionSync(s: Status | null): string {
           )
           .join("")}
       </div></section>
-    <div class="flex justify-end xl:col-span-2"><button class="btn primary" id="set-save-sync">${icon("ok")}Save hours and speed</button></div>
+    ${actions("Hours and speed apply from the next file.", `<button class="btn primary" id="set-save-sync">${icon("ok")}Save hours and speed</button>`)}
   </div>`;
 }
 
 function sectionAccounts(s: Status | null): string {
   const accs = s?.accounts ?? [];
-  return `<div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+  return `<div class="grid grid-cols-1 items-start gap-4 xl:grid-cols-2">
     <section class="card">${cardHead("Connected", "users", badge(`${accs.length} of ${s?.max_accounts ?? 5}`, accs.length ? "good" : "warn"))}
       ${
         accs.length
@@ -203,12 +270,11 @@ function sectionAlbums(): string {
           <input type="radio" name="albums" value="${k}" class="mt-1 accent-[var(--accent)]" ${cfg?.albums === k ? "checked" : ""}><span><span class="block text-sm font-medium">${l}</span><span class="text-xs text-ink-3">${d}</span></span></label>`,
         )
         .join("")}
-        <p class="pt-1 text-xs text-ink-3">Albums are created the first time and reused after that. Files uploaded earlier are not moved.</p>
       </div></section>
     <section class="card">${cardHead("Duplicates", "copy")}
       <div class="card-b">${toggleRow("set-hash", "Check older uploads for duplicates", "Fingerprints files while the app is idle. See Library › Duplicates.", !!cfg?.hash_existing)}
       <a href="#/library/duplicates" class="btn mt-3">${icon("copy")}Open duplicates</a></div></section>
-    <div class="flex justify-end xl:col-span-2"><button class="btn primary" id="set-save-albums">${icon("ok")}Save</button></div>
+    ${actions("Albums are created the first time and reused after that. Files uploaded earlier are not moved.", `<button class="btn primary" id="set-save-albums">${icon("ok")}Save</button>`)}
   </div>`;
 }
 
@@ -230,11 +296,12 @@ function sectionAlerts(): string {
         <div class="flex items-center gap-3 py-3"><span class="flex-1 text-sm text-ink-2">…only rounds with at least</span><input class="input w-24" id="a-min" type="number" min="1" value="${n?.round_min ?? 20}"><span class="text-sm text-ink-3">files</span></div>
         ${toggleRow("a-week", "Weekly summary", "Mondays at 9:00", !!n?.weekly)}
       </div></section>
-    <div class="flex flex-wrap justify-end gap-2 xl:col-span-2">
-      <button class="btn" id="n-week">${icon("chart")}Send weekly summary now</button>
+    ${actions(
+      "Save first, then send a test to check it arrives.",
+      `<button class="btn" id="n-week">${icon("chart")}Weekly summary</button>
       <button class="btn" id="n-test">${icon("bell")}Send test</button>
-      <button class="btn primary" id="n-save">${icon("ok")}Save alerts</button>
-    </div>
+      <button class="btn primary" id="n-save">${icon("ok")}Save alerts</button>`,
+    )}
   </div>`;
 }
 
@@ -253,39 +320,67 @@ function installBadge(): string {
   }
 }
 
+/** A small picture of the dashboard in one theme (fixed colors, so it looks the same in either theme). */
+function themeMock(kind: "dark" | "light"): string {
+  const lines = (n: number) =>
+    Array.from({ length: n }, (_, i) => `<i${i === 0 ? ' class="on"' : ""}></i>`).join("");
+  return `<span class="pv pv-${kind}" aria-hidden="true">
+    <span class="pv-side">${lines(5)}</span>
+    <span class="pv-main"><span class="pv-top"><i></i><b></b></span>
+      <span class="pv-row"><span class="pv-card"><em></em><i></i></span><span class="pv-card"><em class="g"></em><i></i></span></span>
+      <span class="pv-card wide"><i></i><i class="short"></i><span class="pv-bar"><b></b></span></span></span>
+  </span>`;
+}
+
+function themeNote(t: string): string {
+  if (t !== "system") return "Saved in this browser.";
+  const dark = !matchMedia("(prefers-color-scheme: light)").matches;
+  return `Follows this device, now <b>${dark ? "dark" : "light"}</b>. Saved in this browser.`;
+}
+
 function sectionApp(): string {
   const theme = currentTheme();
+  const opts: [string, string, IconName, string][] = [
+    [
+      "system",
+      "System",
+      "devices",
+      `${themeMock("dark")}${themeMock("light").replace("pv pv-light", "pv pv-light pv-half")}`,
+    ],
+    ["dark", "Dark", "moon", themeMock("dark")],
+    ["light", "Light", "sun", themeMock("light")],
+  ];
+  const caps = capabilities();
+  const ready = caps.filter((c) => c.ok).length;
+  const state = installState();
   return `<div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-    <section class="card">${cardHead("Install as an app", "phone")}
-      <div class="card-b space-y-3 text-sm text-ink-2">
-        <p>Add this dashboard to your home screen: it opens full screen and can upload photos straight from your phone.</p>
-        <div class="flex flex-wrap gap-1.5">${installBadge()}</div>
-        <div class="space-y-2" id="set-install-help">${installHelp()}</div>
-        <button class="btn primary ${installState() === "ready" ? "" : "hidden"}" id="set-install">${icon("download")}Install now</button>
+    <section class="card xl:col-span-2">${cardHead("Theme", "palette")}
+      <div class="card-b">
+        <div class="grid grid-cols-3 gap-3 sm:gap-4" id="set-theme" role="radiogroup" aria-label="Theme">${opts
+          .map(
+            ([k, l, ic, mock]) =>
+              `<button type="button" class="theme-opt" role="radio" data-t="${k}" aria-checked="${k === theme}"><span class="theme-prev">${mock}<span class="theme-check">${icon("check")}</span></span><span class="theme-label">${icon(ic)}${l}</span></button>`,
+          )
+          .join("")}</div>
+        <p class="mt-3 text-xs text-ink-3" id="set-theme-note">${themeNote(theme)}</p>
       </div></section>
-    <section class="card">${cardHead("What works on this device", "phone")}
-      <div class="px-4 py-1">${capabilities()
+    <section class="card xl:col-span-2">${cardHead("Install as an app", "download", installBadge())}
+      <div class="card-b grid grid-cols-1 gap-4 text-sm text-ink-2 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:items-center">
+        <div class="flex items-start gap-3">${tileIcon("phone", "#0a84ff", "lg")}<div class="min-w-0"><div class="font-medium text-ink">GP Sync on your home screen</div><p class="text-xs text-ink-3">Opens full screen without the browser bars, and uploads photos straight from your phone.</p>${state === "ready" ? `<button class="btn primary mt-3" id="set-install">${icon("download")}Install now</button>` : ""}</div></div>
+        <div class="install-help" id="set-install-help">${installHelp()}</div>
+      </div></section>
+    <section class="card xl:col-span-2">${cardHead("What works on this device", "devices", badge(`${ready} of ${caps.length}`, ready === caps.length ? "good" : "info"))}
+      <ul class="cap-list">${caps
         .map(
           (c) =>
-            `<div class="flex items-start gap-3 border-b border-line py-2.5 last:border-b-0">${icon(c.ok ? "ok" : "x", `mt-0.5 size-4 shrink-0 ${c.ok ? "text-good" : "text-ink-3"}`)}<div class="min-w-0"><div class="text-sm font-medium">${esc(c.label)}</div><div class="text-xs text-ink-3">${esc(c.note)}</div></div></div>`,
+            `<li class="cap ${c.ok ? "ok" : "no"}"><span class="cap-ic">${icon(c.ok ? "check" : "x")}</span><div class="min-w-0"><div class="text-sm font-medium ${c.ok ? "" : "text-ink-2"}">${esc(c.label)}</div><div class="text-xs text-ink-3">${esc(c.note)}</div></div></li>`,
         )
-        .join("")}</div></section>
+        .join("")}</ul></section>
     ${
       status()?.auth
-        ? `<section class="card">${cardHead("Sign-in", "lock")}<form class="card-b flex items-center justify-between gap-3" method="post" action="logout"><span class="text-sm text-ink-2">This dashboard asks for a password.</span><button class="btn" type="submit">${icon("x")}Sign out</button></form></section>`
+        ? `<section class="card xl:col-span-2">${cardHead("Sign-in", "lock")}<form class="card-b flex flex-wrap items-center justify-between gap-3" method="post" action="logout"><span class="text-sm text-ink-2">This dashboard asks for a password. Signing out here does not affect other devices.</span><button class="btn danger" type="submit">${icon("logout")}Sign out</button></form></section>`
         : ""
     }
-    <section class="card">${cardHead("Appearance", "sun")}
-      <div class="card-b space-y-3"><div class="seg" id="set-theme">${[
-        ["system", "System", "settings"],
-        ["dark", "Dark", "moon"],
-        ["light", "Light", "sun"],
-      ]
-        .map(
-          ([k, l, ic]) =>
-            `<button data-t="${k}" aria-pressed="${k === theme}">${icon(ic as IconName)}${l}</button>`,
-        )
-        .join("")}</div><p class="text-xs text-ink-3">Saved in this browser.</p></div></section>
   </div>`;
 }
 
@@ -339,7 +434,12 @@ function renderSection(): void {
     app: sectionApp,
     api: sectionApi,
   };
-  body.innerHTML = (map[section] ?? map.sync!)();
+  const key = map[section] ? section : "sync";
+  body.innerHTML = `${sectionHead(key)}${map[key]!()}`;
+  // Phones: keep the chosen tab in view in the scrolling row.
+  document
+    .querySelector<HTMLElement>(`.set-tabs [data-sec="${key}"]`)
+    ?.scrollIntoView({ block: "nearest", inline: "center" });
   wire();
 }
 
@@ -503,8 +603,18 @@ function wire(): void {
   on("set-theme", "click", (e) => {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
     if (!b) return;
-    setTheme(b.dataset.t ?? "dark");
-    $$("button", $("#set-theme")).forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    const t = b.dataset.t ?? "dark";
+    const pick = () => {
+      setTheme(t);
+      $$("button", $("#set-theme")).forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+      const note = document.getElementById("set-theme-note");
+      if (note) note.innerHTML = themeNote(t);
+    };
+    // Cross-fade the whole page where the browser can; a plain swap elsewhere.
+    const doc = document as Document & { startViewTransition?: (fn: () => void) => unknown };
+    if (doc.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches)
+      doc.startViewTransition(pick);
+    else pick();
   });
 
   // api
@@ -519,11 +629,11 @@ const settings: View = {
     section = SECTIONS.some(([k]) => k === args[0]) ? (args[0] as string) : "sync";
     el.innerHTML = `
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
-      <nav class="lg:col-span-4 xl:col-span-3">
-        <div class="scroll-thin flex gap-2 overflow-x-auto pb-1 lg:hidden">${SECTIONS.map(([k, l, ic]) => `<a href="#/settings/${k}" data-sec="${k}" class="btn sm shrink-0 aria-[current=page]:border-accent aria-[current=page]:text-accent">${icon(ic)}${l}</a>`).join("")}</div>
-        <div class="card sticky top-0 hidden p-2 lg:block">${SECTIONS.map(
-          ([k, l, ic, d]) =>
-            `<a href="#/settings/${k}" data-sec="${k}" class="nav-item h-auto py-2.5">${icon(ic)}<span class="min-w-0"><span class="block">${l}</span><span class="block truncate text-xs font-normal text-ink-3">${d}</span></span></a>`,
+      <nav class="lg:col-span-4 xl:col-span-3" aria-label="Settings sections">
+        <div class="set-tabs scroll-thin lg:hidden">${SECTIONS.map(([k, l, ic, , c]) => `<a href="#/settings/${k}" data-sec="${k}" class="set-tab">${tileIcon(ic, c, "sm")}${l}</a>`).join("")}</div>
+        <div class="set-nav hidden lg:flex">${SECTIONS.map(
+          ([k, l, ic, d, c]) =>
+            `<a href="#/settings/${k}" data-sec="${k}" class="set-item">${tileIcon(ic, c)}<span class="min-w-0 flex-1"><span class="block leading-snug">${l}</span><span class="block truncate text-xs font-normal text-ink-3">${d}</span></span>${icon("chevron", "set-chev")}</a>`,
         ).join("")}</div>
       </nav>
       <div class="min-w-0 lg:col-span-8 xl:col-span-9" id="set-body"><div class="card skeleton h-64"></div></div>

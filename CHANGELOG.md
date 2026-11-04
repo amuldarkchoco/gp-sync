@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.2
+
+- Settings menu: each section has a colored icon (like iOS Settings), the rows have a little
+  space between them, and hovering lights up only the row under the pointer (the soft glow no
+  longer spills over the rows next to it); the open section is marked with a blue edge
+- App & appearance, redone: pick the theme from three small pictures of the dashboard
+  (System, Dark, Light) at the top; the change fades in across the page, and System shows
+  whether the device is in dark or light mode right now
+- Install as an app: a clearer card with the steps for this device in one place
+- What works on this device: a tidy two-column list with a count ("4 of 7")
+- Every settings section starts with its title and a one-line explanation
+- Save and other buttons sit in one bar at the end of each section, with a short note; on
+  phones they fill the width so they are easy to tap
+- Sync: the status card no longer repeats the "Sync" title, and the Pause, Scan now and Retry
+  buttons line up on phones
+- Phones: the section tabs show their icons, and the open one stays in view
+
 ## 1.0.1
 
 - Overview: Customize is now a small "Edit" link (next to the page subtitle on wider screens,
