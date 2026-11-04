@@ -95,8 +95,8 @@ Treat that line like a password: it gives full access to the Google Photos libra
 
 ## Run it anywhere
 
-GP Sync is a Docker image, `ghcr.io/kshanxs/gp-sync`, for Intel/AMD (amd64) and ARM (arm64):
-Linux servers, NAS boxes, Raspberry Pi, Windows and macOS with Docker Desktop, or Umbrel.
+GP Sync is a Docker image for Intel/AMD (amd64) and ARM (arm64): [`kshanxs/gp-sync`](https://hub.docker.com/r/kshanxs/gp-sync)
+on Docker Hub (also `ghcr.io/kshanxs/gp-sync`). It runs on Linux servers, NAS boxes, Raspberry Pi, Windows and macOS with Docker Desktop, or Umbrel.
 It backs up **whatever folders you mount under `/media`**, read-only: a phone backup folder, an
 Immich library, a NAS share, anything. Each folder you mount shows up in **Settings → Folders**,
 where you choose which Google account backs it up.
@@ -106,7 +106,7 @@ where you choose which Google account backs it up.
 ```yaml
 services:
   gp-sync:
-    image: ghcr.io/kshanxs/gp-sync:latest
+    image: kshanxs/gp-sync:latest
     restart: unless-stopped
     ports: ["8527:8527"]
     environment:
@@ -137,7 +137,7 @@ Use Windows paths on the left side; Docker Desktop shares the drive:
 Or in one line (PowerShell):
 
 ```powershell
-docker run -d --name gp-sync --restart unless-stopped -p 8527:8527 -v C:\gp-sync-data:/data -v "D:\Pictures:/media/Pictures:ro" ghcr.io/kshanxs/gp-sync:latest
+docker run -d --name gp-sync --restart unless-stopped -p 8527:8527 -v C:\gp-sync-data:/data -v "D:\Pictures:/media/Pictures:ro" kshanxs/gp-sync:latest
 ```
 
 ### Immich
@@ -208,7 +208,7 @@ uv run pytest              # tests (build the dashboard first), including checks
 - `VERSION` is the app version. Raise it (and add a section to `CHANGELOG.md`) to release.
 - `.github/workflows/release.yml` lints and tests every push (`vp check`, `vp test`, `vp build`,
   ruff, pytest). When `VERSION` has no git tag yet, it builds the image
-  `ghcr.io/kshanxs/gp-sync:<version>` (amd64 and arm64), tags the commit `v<version>` and makes a
+  `kshanxs/gp-sync:<version>` on Docker Hub and `ghcr.io/kshanxs/gp-sync:<version>` (amd64 and arm64), tags the commit `v<version>` and makes a
   GitHub release with that version's `CHANGELOG.md` notes. The Umbrel store
   [kshanxs/kshanxs-umbrel-store](https://github.com/kshanxs/kshanxs-umbrel-store) checks for new
   images every hour and updates itself; Umbrel then shows **Update**.
