@@ -306,6 +306,8 @@ export interface FolderReport {
   children: FolderGroup[];
   /** The subfolders were a backup app's 00..ff folders: not listed, the photos are shown instead. */
   buckets?: boolean;
+  /** At the top: folders that aren't backed up (not counted), with how many files they hold. */
+  not_backed_up?: { name: string; files: number }[];
 }
 export interface FolderFiles {
   path: string;

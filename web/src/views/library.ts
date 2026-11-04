@@ -129,7 +129,8 @@ async function loadDuplicates(): Promise<void> {
 }
 
 function folderOptions(s: Status | null): string {
-  const names = s ? Object.keys(s.folders).filter((f) => s.folders[f]?.files) : [];
+  // Only backed-up folders: Library lists what was sent to Google, others would look empty.
+  const names = s ? Object.keys(s.folders).filter((f) => s.folders[f]?.files && s.folders[f]?.account) : [];
   if (folder && !names.includes(folder)) names.push(folder); // a deeper folder, opened from Folders
   return `<option value="">All folders</option>${names.map((n) => `<option ${n === folder ? "selected" : ""}>${esc(n)}</option>`).join("")}`;
 }

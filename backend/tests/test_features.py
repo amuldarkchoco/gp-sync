@@ -548,3 +548,18 @@ def test_backup_app_buckets_are_hidden_and_files_listed(media):
     assert sync.folder_files("Photos/iPhone", status="failed")["items"][0]["error"] == "bad file"
     assert sync.folder_files("Photos/iPhone", kind="video")["total"] == 0
     assert sync.folder_files("Photos/iPhone", limit=2, offset=3)["items"][0]["name"].endswith(".jpg")
+
+
+def test_overview_only_counts_backed_up_folders(media):
+    (media / "Downloads" / "Film").mkdir(parents=True, exist_ok=True)
+    (media / "Downloads" / "Film" / "poster.jpg").write_bytes(b"d" * 10)
+    sync.scan()
+    sync.state["last_scan"] = time.time()
+    top = sync.folder_report("", "folders", 30)
+    assert {c["name"] for c in top["children"]} == {"Photos", "Videos"}  # Downloads isn't backed up
+    assert top["total"]["files"] == 3
+    assert top["not_backed_up"] == [{"name": "Downloads", "files": 1}]
+    assert sync.folder_files("")["total"] == 3
+    # Opened on purpose, it still shows what's in it.
+    assert sync.folder_files("Downloads")["total"] == 1
+    assert sync.folder_report("Downloads", "folders", 30)["total"]["files"] == 1

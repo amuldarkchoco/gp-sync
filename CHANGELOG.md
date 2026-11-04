@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.4
+
+- Folders and Devices only list and count the folders you back up; others (like Downloads) are
+  named in a short note with a link to choose folders
+- Every Folders page shows a photos and videos grid, also the first one (newest first, from all
+  backed-up folders)
+- Library's folder menu only offers backed-up folders (others looked empty there)
+
 ## 1.1.3
 
 - Folders redesigned: devices and folders come first, under one compact summary (the chart moved

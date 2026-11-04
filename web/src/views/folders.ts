@@ -87,7 +87,6 @@ async function load(): Promise<void> {
 }
 
 async function loadFiles(reset: boolean): Promise<void> {
-  if (!path) return;
   if (!reset && (fLoading || !files || shownFiles.length >= files.total)) return;
   const mine = ++fRequest;
   fLoading = true;
@@ -231,10 +230,19 @@ function renderList(r: FolderReport): void {
       `<span class="text-xs text-ink-3">${num(rows.length)}</span>`,
     ),
   );
+  const skipped = !path ? (r.not_backed_up ?? []) : [];
+  const note = skipped.length
+    ? `<div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-3 text-xs text-ink-3">${icon("info", "size-3.5")}<span>Not backed up, so not counted here: ${skipped
+        .map(
+          (f) =>
+            `<a class="link-btn" href="#/folders/f/${encodeURIComponent(f.name)}">${esc(f.name)}</a> (${num(f.files)})`,
+        )
+        .join(", ")}.</span><a class="link-btn" href="#/settings/folders">Choose folders</a></div>`
+    : "";
   html(
     $("#fo-list"),
     rows.length
-      ? rows.map(rowHtml).join("")
+      ? rows.map(rowHtml).join("") + note
       : `<div class="empty">${icon(group === "devices" ? "phone" : "folder")}${
           group === "devices" && !path
             ? "No device folders yet. Phone backup apps make one folder per device inside a backed-up folder (for example Photos/iPhone)."
@@ -403,12 +411,16 @@ function skeleton(): void {
   );
   html($("#fo-list"), '<div class="skeleton m-4 h-12"></div>'.repeat(3));
   html($("#fo-chart"), '<div class="skeleton h-40"></div>');
-  $("#fo-files-card").classList.toggle("hidden", !path);
-  if (path)
-    html(
-      $("#fo-files"),
-      `<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 2xl:grid-cols-8">${'<div class="card overflow-hidden"><div class="shimmer media-tile aspect-square"></div><div class="space-y-1.5 p-2.5"><div class="skeleton h-3.5 w-3/4"></div><div class="skeleton h-3 w-1/2"></div></div></div>'.repeat(6)}</div>`,
-    );
+  html($("#fo-files-tools"), "");
+  html(
+    $("#fo-files"),
+    `<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 2xl:grid-cols-8">${'<div class="card overflow-hidden"><div class="shimmer media-tile aspect-square"></div><div class="space-y-1.5 p-2.5"><div class="skeleton h-3.5 w-3/4"></div><div class="skeleton h-3 w-1/2"></div></div></div>'.repeat(6)}</div>`,
+  );
+}
+
+function filesSub(): string {
+  if (path) return "Including the folders inside";
+  return "Newest first, from every backed-up folder";
 }
 
 function open(): void {
@@ -419,6 +431,7 @@ function open(): void {
   observer?.disconnect();
   skeleton();
   renderBar();
+  html($("#fo-files-sub"), filesSub());
   void load();
   void loadFiles(true);
 }
@@ -434,8 +447,8 @@ const folders: View = {
     </section>
     <section class="card mb-4 p-4" id="fo-summary"></section>
     <section class="card mb-4 overflow-hidden" id="fo-list-card"><div id="fo-list-head"></div><div class="divide-y divide-line" id="fo-list"></div></section>
-    <section class="card mb-4 hidden" id="fo-files-card">
-      ${cardHead("Photos and videos", "library", `<span class="hidden text-xs text-ink-3 sm:inline">Including the folders inside</span>`)}
+    <section class="card mb-4" id="fo-files-card">
+      ${cardHead("Photos and videos", "library", `<span class="hidden text-xs text-ink-3 sm:inline" id="fo-files-sub"></span>`)}
       <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3" id="fo-files-tools"></div>
       <div class="p-3" id="fo-files"></div>
     </section>

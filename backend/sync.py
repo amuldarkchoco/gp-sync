@@ -1281,13 +1281,14 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
     total = _blank()
     daily = {}  # day number -> [photos, videos]
     groups = {}
+    backed = backed_folders()
+    skipped_tops = {}  # top folder not backed up -> files in it (shown as a note, not counted)
+    uploads = upload_folder_name()
     if group == "devices":
-        backed = {t for t, a in folder_targets().items() if a}
-        uploads = upload_folder_name()
 
         def key_of(name):
             parts = name.split("/")
-            if len(parts) < 3 or parts[0] not in backed:
+            if len(parts) < 3 or (backed is not None and parts[0] not in backed):
                 return None
             folder = f"{parts[0]}/{parts[1]}"
             return (_device_name(parts[1]), folder)
@@ -1299,6 +1300,9 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
             if not name.startswith(prefix):
                 return None
             parts = name.split("/")
+            if not path and backed is not None and parts[0] not in backed:
+                skipped_tops[parts[0]] = skipped_tops.get(parts[0], 0) + 1
+                return None  # the overview only counts folders that are backed up
             sub = parts[depth] if len(parts) > depth + 1 else ""
             return (sub, prefix + sub if sub else path)
 
@@ -1381,7 +1385,14 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
         ],
         "children": [] if buckets else children,
         "buckets": buckets,
+        "not_backed_up": [{"name": k, "files": v} for k, v in sorted(skipped_tops.items())],
     }
+
+
+def backed_folders():
+    """Top folders that are backed up, or None when none are yet (then everything is shown)."""
+    tops = {t for t, a in folder_targets().items() if a}
+    return tops or None
 
 
 BUCKET = re.compile(r"[0-9a-f]{2}", re.I)
@@ -1396,7 +1407,10 @@ FILE_SORTS = {
 def folder_files(path="", status="all", kind="all", sort="new", offset=0, limit=60):
     """Every photo and video in a folder and the folders inside it, backed up yet or not."""
     prefix = path + "/" if path else ""
-    entries = [e for e in state["index"] if e[0].startswith(prefix)]
+    backed = None if path else backed_folders()
+    entries = [
+        e for e in state["index"] if e[0].startswith(prefix) and (backed is None or e[0].split("/", 1)[0] in backed)
+    ]
     states = {
         rel(p): (st, err)
         for p, st, err in q(
