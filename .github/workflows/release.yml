@@ -151,10 +151,24 @@ jobs:
         if: steps.build.outputs.digest != ''
         run: |
           git tag "v${{ steps.check.outputs.version }}"
-          git push origin "v${{ steps.check.outputs.version }}"
+          # GitHub sometimes answers a push with a 500: try again before giving up.
+          for i in 1 2 3 4 5; do
+            git push origin "v${{ steps.check.outputs.version }}" && exit 0
+            sleep $((i * 15))
+          done
+          exit 1
 
       - name: GitHub release
         if: steps.build.outputs.digest != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release create "v${{ steps.check.outputs.version }}" --title "GP Sync ${{ steps.check.outputs.version }}" --notes-file "$RUNNER_TEMP/notes.txt"
+
+      # A tagged version without a release page (the release step failed last time): add it now.
+      - name: Catch up a missing GitHub release
+        if: steps.check.outputs.needed == 'false' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="v${{ steps.check.outputs.version }}"
+          gh release view "$v" >/dev/null 2>&1 || gh release create "$v" --verify-tag --title "GP Sync ${{ steps.check.outputs.version }}" --notes-file "$RUNNER_TEMP/notes.txt"
