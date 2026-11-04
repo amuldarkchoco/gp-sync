@@ -31,7 +31,9 @@ import media
 import notify
 
 HERE = Path(__file__).resolve().parent
-VERSION = (HERE / "VERSION").read_text().strip() if (HERE / "VERSION").exists() else "dev"
+# VERSION sits next to sync.py in the image, one level up (repo root) when run from backend/.
+_VERSION_FILE = next((p for p in (HERE / "VERSION", HERE.parent / "VERSION") if p.exists()), None)
+VERSION = _VERSION_FILE.read_text().strip() if _VERSION_FILE else "dev"
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 MEDIA = Path(os.environ.get("MEDIA_DIR", "/media"))
 PORT = int(os.environ.get("PORT", "8527"))
@@ -54,8 +56,10 @@ UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "/uploads"))
 UPLOAD_OWNER = (int(os.environ.get("PUID", "1000")), int(os.environ.get("PGID", "1000")))
 MAX_UPLOAD = 50 * 1024**3
 upload_lock = threading.Lock()
-# The dashboard built by Vite (web/ → static/ in the image; web/dist when run from the repo).
-STATIC_DIR = next((d for d in (HERE / "static", HERE / "web" / "dist") if (d / "index.html").exists()), HERE / "static")
+# The dashboard built by Vite (web/ → static/ in the image; ../web/dist when run from backend/ in the repo).
+STATIC_DIR = next(
+    (d for d in (HERE / "static", HERE.parent / "web" / "dist") if (d / "index.html").exists()), HERE / "static"
+)
 
 PHOTO_EXTS = {
     "jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "bmp", "tif", "tiff", "avif",

@@ -1,8 +1,8 @@
-tests/
-.venv/
-__pycache__/
-.pytest_cache/
-.ruff_cache/
+backend/tests/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
 web/node_modules/
 web/dist/
 Dockerfile

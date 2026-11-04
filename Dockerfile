@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 # GP Sync: back up mounted photo/video folders to Google Photos.
-# Built by .github/workflows/gphotos-sync.yml and published as ghcr.io/kshanxs/gphotos-sync.
+# Built by .github/workflows/release.yml and published as kshanxs/gp-sync (Docker Hub) and ghcr.io/kshanxs/gp-sync.
+# Layout: backend/ (Python sync engine and REST API), web/ (TypeScript dashboard).
 
 # --- Dashboard: TypeScript + Tailwind CSS, checked, tested and built with Vite+.
 # Runs on the build machine's own platform; the output is plain HTML/CSS/JS for every platform.
@@ -29,10 +30,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # Exact package versions from uv.lock (cached layer unless the lock changes).
-COPY pyproject.toml uv.lock .python-version ./
+COPY backend/pyproject.toml backend/uv.lock backend/.python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY sync.py media.py notify.py cache.py VERSION ./
+COPY backend/sync.py backend/media.py backend/notify.py backend/cache.py VERSION ./
 COPY --from=web /web/dist ./static
 
 # Last, because they change on every build: everything above stays cached and unchanged.

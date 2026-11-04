@@ -55,12 +55,13 @@ jobs:
           npx vp test
           npx vp build
 
-      - name: Lint and test
+      - name: Lint and test (backend)
+        working-directory: backend
         run: |
           uv lock --check
           uv sync --frozen
-          uv run --frozen ruff check . scripts
-          uv run --frozen ruff format --check . scripts
+          uv run --frozen ruff check . ../scripts
+          uv run --frozen ruff format --check . ../scripts
           uv run --frozen pytest -q
 
       - name: "Newer dependencies passed every test: next patch version"

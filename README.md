@@ -242,7 +242,24 @@ such as Tailscale. The network speed on the page is this container's own traffic
 
 ## Development
 
-The sync engine and REST API are Python (`sync.py`). The dashboard is TypeScript in `web/`,
+```text
+backend/        Python: sync engine and REST API
+  sync.py         web server, scanning and uploads
+  media.py        fingerprints and thumbnails
+  notify.py       ntfy and Telegram alerts
+  cache.py        Redis cache with a memory fallback
+  tests/          pytest
+  pyproject.toml, uv.lock
+web/            TypeScript dashboard (Vite+, Tailwind CSS)
+  src/views/      one file per page
+  src/lib/        shared code (API, charts, icons, …)
+scripts/        dependency updater used by the release workflow
+docs/           README screenshots
+Dockerfile      builds web/, then the Python image
+VERSION         app version; CHANGELOG.md lists what changed
+```
+
+The sync engine and REST API are Python, in `backend/`. The dashboard is TypeScript in `web/`,
 styled with Tailwind CSS v4, with Lucide icons and hand-drawn SVG charts, and built with
 [Vite+](https://viteplus.dev) (`vp`: Vite, Rolldown, Oxlint, Oxfmt and Vitest in one tool). In `web/`:
 
@@ -256,7 +273,7 @@ npx vp build               # build into web/dist, which sync.py serves
 
 The Docker image builds the dashboard in a Node stage and copies only the result into the Python image.
 
-The Python side uses [uv](https://docs.astral.sh/uv/) and [ruff](https://docs.astral.sh/ruff/). In the repo root:
+The Python side uses [uv](https://docs.astral.sh/uv/) and [ruff](https://docs.astral.sh/ruff/). In `backend/`:
 
 ```sh
 uv sync                    # install exact versions from uv.lock, plus ruff and pytest

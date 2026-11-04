@@ -12,10 +12,11 @@ import sys
 import urllib.request
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1]
-PYPROJECT = SRC / "pyproject.toml"
-LOCK = SRC / "uv.lock"
-WEB = SRC / "web"
+ROOT = Path(__file__).resolve().parents[1]
+BACKEND = ROOT / "backend"
+PYPROJECT = BACKEND / "pyproject.toml"
+LOCK = BACKEND / "uv.lock"
+WEB = ROOT / "web"
 PACKAGE_JSON = WEB / "package.json"
 
 
@@ -60,7 +61,7 @@ def main():
         PYPROJECT.write_text(text.replace(f'"gpmc=={current}"', f'"gpmc=={latest}"'))
 
     before = locked_versions()
-    subprocess.run(["uv", "lock", "--upgrade"], cwd=SRC, check=True, stdout=sys.stderr)
+    subprocess.run(["uv", "lock", "--upgrade"], cwd=BACKEND, check=True, stdout=sys.stderr)
     after = locked_versions()
     changes = [f"{n} {before.get(n, 'new')} -> {v}" for n, v in sorted(after.items()) if before.get(n) != v]
     changes += update_web()
