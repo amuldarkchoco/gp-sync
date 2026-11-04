@@ -13,6 +13,7 @@ import type { View } from "./views/view";
 import about from "./views/about";
 import activity from "./views/activity";
 import health from "./views/health";
+import copyView from "./views/copy";
 import folders from "./views/folders";
 import historyView from "./views/history";
 import insights from "./views/insights";
@@ -37,6 +38,7 @@ const ROUTES: Route[] = [
   { id: "activity", title: "Activity", ic: "activity", view: activity, group: "Backup" },
   { id: "library", title: "Library", ic: "library", view: library, group: "Backup" },
   { id: "storage", title: "Free storage", ic: "cloud", view: storage, group: "Backup" },
+  { id: "copy", title: "Copy accounts", ic: "users", view: copyView, group: "Backup" },
   { id: "folders", title: "Folders", ic: "folder", view: folders, group: "Insights" },
   { id: "history", title: "History", ic: "calendar", view: historyView, group: "Insights" },
   { id: "insights", title: "Insights", ic: "chart", view: insights, group: "Insights" },

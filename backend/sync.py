@@ -178,6 +178,15 @@ def db():
             state TEXT, error TEXT, local TEXT, new_key TEXT, checks INTEGER DEFAULT 0, updated REAL,
             PRIMARY KEY (account, media_key))"""
     )
+    # Items copied from one Google account to another (see "copy between Google accounts").
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS copyjobs (
+            src TEXT NOT NULL, dst TEXT NOT NULL, media_key TEXT NOT NULL, dedup_key TEXT, name TEXT,
+            kind TEXT, size INTEGER, taken REAL, favorite INTEGER, archived INTEGER, caption TEXT,
+            state TEXT, error TEXT, new_key TEXT, checks INTEGER DEFAULT 0, updated REAL,
+            PRIMARY KEY (src, dst, media_key))"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS copyjobs_state ON copyjobs(state, taken)")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.commit()
     return conn
@@ -2211,13 +2220,21 @@ def reclaim_cancel(account, keys):
     return {"cancelled": n}
 
 
+_clients = {}  # account -> (login, gpmc Client): one login per account, renewed by gpmc when due
+_clients_lock = threading.Lock()
+
+
 def _reclaim_client(account):
     from gpmc import Client
 
     auth = dict(accounts()).get(account)
     if not auth:
         raise RuntimeError(f"{account} is not connected")
-    return Client(auth_data=auth, log_level="WARNING")
+    with _clients_lock:
+        known = _clients.get(account)
+        if not known or known[0] != auth:  # new, or the login was replaced
+            known = _clients[account] = (auth, Client(auth_data=auth, log_level="WARNING"))
+        return known[1]
 
 
 def _download_urls(response):
@@ -2243,13 +2260,16 @@ def _download_urls(response):
     return [u for _, u in sorted(found, key=lambda x: x[0])][:3]
 
 
-def _download(client, account, key, dedup, name, size, taken):
-    """Download one item and prove it is Google's original (same SHA-1). Returns the path."""
+def _download(client, account, key, dedup, name, size, taken, folder=None, track=None):
+    """Download one item and prove it is Google's original (same SHA-1). Returns the path.
+
+    `track` is the dict whose "current" shows progress (Free storage or account copy)."""
     import requests
 
+    track = reclaim_state if track is None else track
     if shutil.disk_usage(DATA).free < (size or 0) * 1.1 + 512 * 1024**2:
         raise RuntimeError("Not enough free disk space for this file")
-    folder = RECLAIM_DIR / account / key
+    folder = folder or RECLAIM_DIR / account / key
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / (clean_name(name) or f"{key}.bin")
     tmp = target.with_suffix(target.suffix + ".part")
@@ -2266,7 +2286,7 @@ def _download(client, account, key, dedup, name, size, taken):
                 f.write(block)
                 digest.update(block)
                 done += len(block)
-                reclaim_state["current"] = {"key": key, "step": "downloading", "done": done, "total": size}
+                track["current"] = {"key": key, "step": "downloading", "done": done, "total": size}
         if _b64_hash(digest.digest()) == dedup:
             tmp.replace(target)
             if taken:
@@ -2297,6 +2317,7 @@ def reclaim_step(make_client=None):
         return False
     did = False
     clients = {}
+    now = time.time()
 
     def client_for(account):
         if account not in clients:
@@ -2309,11 +2330,13 @@ def reclaim_step(make_client=None):
                 reclaim_state["current"] = {"key": key, "step": "downloading", "done": 0, "total": size}
                 path = _download(client_for(account), account, key, dedup, name, size, taken)
                 _set_reclaim(account, key, "downloaded", local=str(path))
+                reclaim_state["error"] = ""
                 log(f"Downloaded {name} from Google ({fmt_bytes(size)}): delete it in Google Photos to free it", "info")
                 return True  # one download per step: the next one waits for the next call
             if st_ in ("downloaded", "in_google"):
-                if reclaim_blocked(account):
-                    continue
+                if reclaim_blocked(account) or now - _reclaim_checked.get(key, 0) < 100:
+                    continue  # asked Google about it less than 2 minutes ago
+                _reclaim_checked[key] = now
                 client = client_for(account)
                 if client.api.find_remote_media_by_hash(base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))):
                     continue  # the user hasn't deleted it yet (or it's still in Google's Trash)
@@ -2328,7 +2351,9 @@ def reclaim_step(make_client=None):
                 _restore_details(client, dedup, fav, arch, cap)
                 _set_reclaim(account, key, "checking", new_key=result, checks=0)
             elif st_ == "checking":
-                did = True
+                if now - _reclaim_checked.get(key, 0) < 60:
+                    continue  # Google needs a moment to list a new upload: check once a minute
+                _reclaim_checked[key] = now
                 client = client_for(account)
                 client.update_cache(show_progress=False)
                 meta_set(f"library_refreshed:{account}", str(time.time()))
@@ -2353,6 +2378,9 @@ def reclaim_step(make_client=None):
             msg = f"{type(e).__name__}: {e}"[:300]
             print(f"Free storage: {name}: {msg}", file=sys.stderr, flush=True)
             if st_ == "queued":
+                if outage := outage_kind(e):  # no internet or Google is down: try again later
+                    reclaim_state["error"] = outage
+                    return False
                 _set_reclaim(account, key, "failed", msg)
                 return True
             _set_reclaim(account, key, st_, msg)  # tried again in 2 minutes
@@ -2361,17 +2389,21 @@ def reclaim_step(make_client=None):
     return did
 
 
-def _reupload(client, path, dedup, size, key):
+_reclaim_checked = {}  # media key -> when Google was last asked about it
+
+
+def _reupload(client, path, dedup, size, key, track=None):
     """Upload the downloaded original the free way. Returns the new media key, or None if Google
     still has the old one (then nothing is uploaded)."""
     from rich.progress import Progress
 
+    track = reclaim_state if track is None else track
     phases = []
 
     def progress(ev):
         phases.append(ev.get("phase"))
         if ev.get("phase") == "uploading":
-            reclaim_state["current"] = {
+            track["current"] = {
                 "key": key,
                 "step": "uploading",
                 "done": ev.get("bytes_completed") or 0,
@@ -2432,6 +2464,277 @@ def reclaim_worker():
             busy = False
         reclaim_wake.wait(1 if busy else 120)
         reclaim_wake.clear()
+
+
+# ---------------------------------------------------------------- copy between Google accounts
+# Everything one connected account owns is copied to another, newest first, one item at a time:
+# download the original (checked against Google's fingerprint), upload it to the other account
+# the free way, bring back favourite, archive and caption. Nothing is deleted anywhere.
+
+COPY_DIR = DATA / "copy"
+COPY_CHECK_EVERY = 25  # after this many copies, check with Google that they don't count
+copy_state = {"current": None, "error": ""}
+copy_wake = threading.Event()
+_OWNED = "origin = 'self' AND COALESCE(trash_timestamp, 0) = 0 AND COALESCE(is_locked, 0) = 0 AND is_canonical"
+
+
+def _year(ts):
+    return time.gmtime(ts).tm_year if ts else None
+
+
+def copy_report(src, dst):
+    """What account `src` has that `dst` doesn't, and how copying is going."""
+    src_rows = _library_rows(
+        src,
+        f"""SELECT dedup_key, type, size_bytes, utc_timestamp, media_key, file_name FROM remote_media
+            WHERE {_OWNED} ORDER BY utc_timestamp DESC""",
+    )
+    dst_keys = _library_rows(dst, "SELECT dedup_key FROM remote_media")
+    have = {k for (k,) in dst_keys or []}
+    jobs = dict(q("SELECT state, COUNT(*) FROM copyjobs WHERE src=? AND dst=? GROUP BY state", (src, dst)))
+    handled = {k for (k,) in q("SELECT dedup_key FROM copyjobs WHERE src=? AND dst=?", (src, dst))}
+    todo = {"photo": [0, 0], "video": [0, 0]}
+    years = {}
+    in_dst = 0
+    dups = {}  # media key -> item: already in dst, or the same file twice in src. Never copied.
+    seen = set()
+    for dedup, kind, size, taken, key, name in src_rows or []:
+        twice = dedup in seen
+        seen.add(dedup)
+        if dedup in handled and not twice:
+            continue  # on the copy list (or copied: then the other account has it because of us)
+        if dedup in have or twice:
+            in_dst += not twice
+            dups[key] = (key, name, RECLAIM_KINDS.get(kind, "photo"), size, _seconds(taken),
+                         "Already in " + dst if not twice else "The same file twice in " + src)  # fmt: skip
+            continue
+        k = RECLAIM_KINDS.get(kind, "photo")
+        todo[k][0] += 1
+        todo[k][1] += size or 0
+        y = _year(_seconds(taken))
+        if y:
+            years[y] = years.get(y, 0) + 1
+
+    def refreshed(acc):
+        v = meta_get(f"library_refreshed:{acc}")
+        return float(v) if v else None
+
+    done = q(
+        "SELECT COUNT(*), SUM(size) FROM copyjobs WHERE src=? AND dst=? AND state IN ('copied', 'done')", (src, dst)
+    )[0]
+    queued = q("SELECT COUNT(*), SUM(size) FROM copyjobs WHERE src=? AND dst=? AND state='queued'", (src, dst))[0]
+    recent = q(
+        """SELECT media_key, name, kind, size, taken, state, error, updated FROM copyjobs
+           WHERE src=? AND dst=? AND state != 'queued' ORDER BY updated DESC LIMIT 40""",
+        (src, dst),
+    )
+    failed = q(
+        """SELECT media_key, name, kind, size, taken, state, error, updated FROM copyjobs
+           WHERE src=? AND dst=? AND state IN ('failed', 'counts') ORDER BY updated DESC LIMIT 100""",
+        (src, dst),
+    )
+    for key, name, kind, size, taken in q(
+        "SELECT media_key, name, kind, size, taken FROM copyjobs WHERE src=? AND dst=? AND state='exists'", (src, dst)
+    ):  # Google said the other account had it when uploading
+        dups.setdefault(key, (key, name, kind, size, taken, "Already in " + dst))
+    dup_list = sorted(dups.values(), key=lambda d: -(d[4] or 0))
+
+    def item(r):
+        key, name, kind, size, taken, state_, error, updated = r
+        return {"key": key, "name": name, "kind": kind, "size": size, "taken": taken, "state": state_,
+                "error": error or "", "updated": updated}  # fmt: skip
+
+    return {
+        "src": src,
+        "dst": dst,
+        "listed": {"src": src_rows is not None, "dst": dst_keys is not None},
+        "refreshed": {"src": refreshed(src), "dst": refreshed(dst)},
+        "refreshing": reclaim_state["refreshing"] in (src, dst) or any(a in (src, dst) for a in _refresh_requests),
+        "error": copy_state["error"] or reclaim_state["error"],
+        "paused": meta_get("copy_paused") == "1",
+        "current": copy_state["current"],
+        "src_total": len(src_rows or []),
+        "in_dst": in_dst,
+        "duplicates": {
+            "count": len(dup_list),
+            "bytes": sum(d[3] or 0 for d in dup_list),
+            "items": [
+                {
+                    "key": k,
+                    "name": n,
+                    "kind": kd,
+                    "size": sz,
+                    "taken": t,
+                    "state": "exists",
+                    "error": why,
+                    "updated": 0,
+                }
+                for k, n, kd, sz, t, why in dup_list[:60]
+            ],
+        },
+        "todo": {k: {"count": c, "bytes": b} for k, (c, b) in todo.items()},
+        "years": dict(sorted(years.items())),
+        "jobs": {
+            "queued": jobs.get("queued", 0),
+            "queued_bytes": queued[1] or 0,
+            "copied": jobs.get("copied", 0) + jobs.get("done", 0),
+            "copied_bytes": done[1] or 0,
+            "verified": jobs.get("done", 0),
+            "exists": jobs.get("exists", 0),
+            "failed": jobs.get("failed", 0),
+            "counts": jobs.get("counts", 0),
+        },
+        "recent": [item(r) for r in recent],
+        "failed": [item(r) for r in failed],
+        "free_space": shutil.disk_usage(DATA).free if DATA.exists() else 0,
+    }
+
+
+def copy_start(src, dst, kinds=("photo", "video"), from_year=None, to_year=None):
+    """Queue everything `src` owns that `dst` doesn't have yet (with the chosen filters)."""
+    src_rows = _library_rows(
+        src,
+        f"""SELECT media_key, dedup_key, file_name, type, size_bytes, utc_timestamp, is_favorite, is_archived,
+                   caption FROM remote_media WHERE {_OWNED}""",
+    )
+    if src_rows is None:
+        raise ValueError("Read the library of the account to copy from first")
+    have = {k for (k,) in _library_rows(dst, "SELECT dedup_key FROM remote_media") or []}
+    handled = {k for (k,) in q("SELECT dedup_key FROM copyjobs WHERE src=? AND dst=?", (src, dst))}
+    now = time.time()
+    batch = []
+    for key, dedup, name, kind, size, taken, fav, arch, cap in src_rows:
+        k = RECLAIM_KINDS.get(kind, "photo")
+        t = _seconds(taken)
+        y = _year(t)
+        if dedup in have or dedup in handled or k not in kinds:
+            continue  # duplicates (already there) are never copied
+        if (from_year and (not y or y < from_year)) or (to_year and (not y or y > to_year)):
+            continue
+        handled.add(dedup)  # the same file twice: copy it once
+        batch.append((src, dst, key, dedup, name, k, size, t, int(bool(fav)), int(bool(arch)), cap or "", now))
+    with db_lock:
+        CONN.executemany(
+            """INSERT OR IGNORE INTO copyjobs (src, dst, media_key, dedup_key, name, kind, size, taken, favorite,
+                                              archived, caption, state, updated)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,'queued',?)""",
+            batch,
+        )
+        CONN.commit()
+    cache.bump()
+    meta_set("copy_paused", "0")
+    copy_wake.set()
+    if batch:
+        log(f"Copying {len(batch)} items from {src} to {dst}", "account")
+    return {"queued": len(batch)}
+
+
+def copy_stop(src, dst):
+    """Take the items that haven't started off the list (copies already made stay)."""
+    n = q("DELETE FROM copyjobs WHERE src=? AND dst=? AND state='queued' RETURNING 1", (src, dst))
+    return {"removed": len(n)}
+
+
+def copy_retry(src, dst):
+    n = q(
+        "UPDATE copyjobs SET state='queued', error='' WHERE src=? AND dst=? AND state='failed' RETURNING 1", (src, dst)
+    )
+    copy_wake.set()
+    return {"queued": len(n)}
+
+
+def _set_copy(src, dst, key, state_, error="", **cols):
+    sets = "".join(f", {c}=?" for c in cols)
+    q(
+        f"UPDATE copyjobs SET state=?, error=?, updated=?{sets} WHERE src=? AND dst=? AND media_key=?",
+        (state_, error, time.time(), *cols.values(), src, dst, key),
+    )
+    notify_change()
+
+
+def _verify_copies(dst_client, src, dst, force=False):
+    """Check with Google that copies made so far don't count against storage. Pauses if they do."""
+    rows = q(
+        "SELECT media_key, new_key, name, checks FROM copyjobs WHERE src=? AND dst=? AND state='copied'", (src, dst)
+    )
+    if not rows or (len(rows) < COPY_CHECK_EVERY and not force):
+        return False
+    dst_client.update_cache(show_progress=False)
+    meta_set(f"library_refreshed:{dst}", str(time.time()))
+    for key, new_key, name, checks in rows:
+        found = _library_rows(dst, "SELECT quota_charged_bytes FROM remote_media WHERE media_key=?", (new_key,))
+        if found and found[0][0]:
+            _set_copy(src, dst, key, "counts", "Google counted this copy against storage")
+            meta_set("copy_paused", "1")
+            log(f"Copy to {dst} paused: Google counted {name} against storage", "error")
+            alert("Account copy paused", f"Google counted the copy of {name} against the storage of {dst}.")
+            return True
+        if found:
+            _set_copy(src, dst, key, "done")
+        elif (checks or 0) >= 10:
+            _set_copy(src, dst, key, "done", "Copied, but Google hasn't listed it yet")
+        else:
+            q("UPDATE copyjobs SET checks=COALESCE(checks, 0)+1 WHERE src=? AND dst=? AND media_key=?", (src, dst, key))
+    return True
+
+
+def copy_step(make_client=None):
+    """Copy the next item. Returns True if there was something to do."""
+    make_client = make_client or _reclaim_client
+    if meta_get("copy_paused") == "1":
+        return False
+    row = q(
+        """SELECT src, dst, media_key, dedup_key, name, size, taken, favorite, archived, caption FROM copyjobs
+           WHERE state='queued' ORDER BY taken DESC LIMIT 1"""
+    )
+    if not row:  # the list is done: check the last copies (once a minute until Google lists them)
+        for s_, d in q("SELECT DISTINCT src, dst FROM copyjobs WHERE state='copied'"):
+            _verify_copies(make_client(d), s_, d, force=True)
+        return False
+    src, dst, key, dedup, name, size, taken, fav, arch, cap = row[0]
+    connected = dict(accounts())
+    if src not in connected or dst not in connected:  # an account was removed: wait, don't fail it all
+        copy_state["error"] = f"{src if src not in connected else dst} is no longer connected. Copying is paused."
+        meta_set("copy_paused", "1")
+        return False
+    folder = COPY_DIR / key
+    try:
+        source, target = make_client(src), make_client(dst)
+        copy_state["current"] = {"key": key, "step": "downloading", "done": 0, "total": size, "name": name}
+        path = _download(source, src, key, dedup, name, size, taken, folder=folder, track=copy_state)
+        new_key = _reupload(target, path, dedup, size, key, track=copy_state)
+        if new_key is None:
+            _set_copy(src, dst, key, "exists")
+        else:
+            _restore_details(target, dedup, fav, arch, cap)
+            _set_copy(src, dst, key, "copied", new_key=new_key)
+            try:  # the copy is made: a failed check is tried again later, it doesn't fail the copy
+                _verify_copies(target, src, dst)
+            except Exception as e:
+                print(f"Account copy: check failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        copy_state["error"] = ""
+    except Exception as e:
+        msg = f"{type(e).__name__}: {e}"[:300]
+        print(f"Account copy: {name}: {msg}", file=sys.stderr, flush=True)
+        if outage := outage_kind(e):  # Google or the internet is down: keep it queued, try again later
+            copy_state["error"] = outage
+            return False
+        _set_copy(src, dst, key, "failed", msg)
+    finally:
+        copy_state["current"] = None
+        shutil.rmtree(folder, ignore_errors=True)
+    return True
+
+
+def copy_worker():
+    while True:
+        try:
+            busy = copy_step()
+        except Exception as e:
+            print(f"Account copy: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            busy = False
+        copy_wake.wait(0.5 if busy else 60)
+        copy_wake.clear()
 
 
 # ---------------------------------------------------------------- uploads from phones
@@ -2963,6 +3266,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/storage":
             account = arg("account", "") or (accounts()[0][0] if accounts() else "")
             self.json(storage_report(account) if account else {"account": "", "listed": False, "items": []})
+        elif path == "/api/copy":
+            accs = [a for a, _ in accounts()]
+            src = arg("src", "") or (accs[0] if accs else "")
+            dst = arg("dst", "") or next((a for a in accs if a != src), "")
+            if src in accs and dst in accs and src != dst:
+                self.json(copy_report(src, dst))
+            else:
+                self.json({"src": src, "dst": dst, "accounts": accs, "ready": False})
         elif path == "/api/storage/thumb":
             account, key = arg("account", ""), arg("key", "")
             self.image("gthumb", f"{account}\n{key}", google_thumb)
@@ -3126,6 +3437,38 @@ class Handler(BaseHTTPRequestHandler):
                     state["phase"] = "paused"
             notify_change()
             self.json({})
+        elif path.startswith("/api/copy/"):
+            try:
+                req = json.loads(body or "{}")
+                src, dst = str(req.get("src", "")), str(req.get("dst", ""))
+            except (ValueError, AttributeError):
+                self.json({"error": "bad request"}, 400)
+                return
+            accs = dict(accounts())
+            if path == "/api/copy/pause":
+                meta_set("copy_paused", "1" if req.get("paused") else "0")
+                copy_state["error"] = ""
+                copy_wake.set()
+                self.json({"ok": True})
+            elif src not in accs or dst not in accs or src == dst:
+                self.json({"error": "Pick two different connected accounts"}, 400)
+            elif path == "/api/copy/refresh":
+                _refresh_requests.extend([src, dst])
+                reclaim_wake.set()
+                self.json({"ok": True})
+            elif path == "/api/copy/start":
+                try:
+                    kinds = [k for k in req.get("kinds") or ["photo", "video"] if k in ("photo", "video")]
+                    years = [int(req[k]) if req.get(k) else None for k in ("from_year", "to_year")]
+                    self.json(copy_start(src, dst, kinds, *years))
+                except ValueError as e:
+                    self.json({"error": str(e)}, 400)
+            elif path == "/api/copy/stop":
+                self.json(copy_stop(src, dst))
+            elif path == "/api/copy/retry":
+                self.json(copy_retry(src, dst))
+            else:
+                self.send(404, "{}")
         elif path.startswith("/api/storage/"):
             try:
                 req = json.loads(body or "{}")
@@ -3180,6 +3523,7 @@ def main():
     with contextlib.suppress(Exception):  # gpmc sets a signal handler on import: main thread only
         import gpmc.client  # noqa: F401
     threading.Thread(target=reclaim_worker, daemon=True).start()
+    threading.Thread(target=copy_worker, daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     worker()  # gpmc installs signal handlers, so it must run on the main thread

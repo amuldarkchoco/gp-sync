@@ -350,6 +350,55 @@ export interface StorageReport {
   freed: { count: number; bytes: number };
   items: StorageItem[];
 }
+export interface CopyItem {
+  key: string;
+  name: string;
+  kind: "photo" | "video";
+  size: number;
+  taken: number;
+  state: "queued" | "copied" | "done" | "exists" | "failed" | "counts";
+  error: string;
+  updated: number;
+}
+export interface CopyReport {
+  src: string;
+  dst: string;
+  /** False when fewer than two accounts are connected. */
+  ready?: boolean;
+  accounts?: string[];
+  listed: { src: boolean; dst: boolean };
+  refreshed: { src: number | null; dst: number | null };
+  refreshing: boolean;
+  error: string;
+  paused: boolean;
+  current: {
+    key: string;
+    name: string;
+    step: "downloading" | "uploading";
+    done: number;
+    total: number;
+  } | null;
+  src_total: number;
+  in_dst: number;
+  /** Never copied: already in the other account, or the same file twice. `error` says which. */
+  duplicates: { count: number; bytes: number; items: CopyItem[] };
+  todo: Record<"photo" | "video", { count: number; bytes: number }>;
+  /** Year -> items still to copy. */
+  years: Record<string, number>;
+  jobs: {
+    queued: number;
+    queued_bytes: number;
+    copied: number;
+    copied_bytes: number;
+    verified: number;
+    exists: number;
+    failed: number;
+    counts: number;
+  };
+  recent: CopyItem[];
+  failed: CopyItem[];
+  free_space: number;
+}
 export interface UploadInfo {
   ready: boolean;
   folder: string;

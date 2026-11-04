@@ -94,6 +94,9 @@ Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
   and GP Sync uploads it again the free way and checks it no longer counts. GP Sync never
   deletes anything in Google. Albums and shared links are not kept. This relies on the same
   free upload as all GP Sync uploads, which Google could stop honouring.
+- **Copy accounts:** copy everything one connected Google account owns to another (only what
+  the other doesn't have), in original quality with dates, favourites, archive and captions.
+  Nothing is deleted in either account. Albums and people names don't come over.
 - **History:** a contribution graph (like GitHub's) of photos, videos, data uploaded or network
   traffic per day, with day details, streaks and 30-day charts.
 - **Alerts:** ntfy or Telegram messages when Google rejects a login, a file fails 5 times or a
@@ -131,6 +134,7 @@ never stop backups; if Turso can't be used, statistics fall back to SQLite autom
 | `GET /api/totals` | All-time totals and fastest upload |
 | `GET /api/files?q=&status=all&folder=&sort=new&limit=60&offset=0` | Search backed-up files |
 | `GET /api/folders?group=folders&path=Photos&days=30&tz=330` | Counts and files added per day for a folder, or `group=devices` |
+| `GET /api/copy?src=&dst=` | What one account has that another lacks, and copying progress |
 | `GET /api/storage?account=` | What counts against Google storage, biggest first, and progress of moving it |
 | `GET /api/duplicates` | Groups of identical files |
 | `GET /api/health` | Version, storage, logins |

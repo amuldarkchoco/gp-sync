@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.2
+
+- New Copy accounts page: copies everything one connected Google account owns to another,
+  newest first, one file at a time. Items the other account already has are skipped. Each file
+  is downloaded, checked to be Google's original, uploaded the free way, and its favourite,
+  archive and caption come along; then the copy on the server is removed. Filter by photos,
+  videos and years; pause, resume, stop and retry failed ones. Nothing is deleted in either
+  account. Every 25 copies GP Sync checks with Google that they don't count against the other
+  account's storage, and pauses if they do. Albums, people names and shared albums don't come over
+- Duplicates are never copied: items the other account already has, files Google reports as
+  already there while uploading, and the same file twice in the account copied from. A
+  "Duplicates found" card shows how many (and how much space), with a list of them
+- Free storage: an item is asked about at most every 2 minutes while it waits for you, a new
+  upload is checked once a minute (it gave up after a few seconds before), and a download that
+  hits an internet or Google outage waits instead of failing
+- One Google login per account is reused, instead of a new one for every file
+
 ## 1.1.0
 
 - New Folders page (Insights): photos, videos, size and how much is backed up for any folder,

@@ -21,10 +21,10 @@ def b64(data):
 
 def item(key, data=DATA, quota=None, **kw):
     return MediaItem(
-        media_key=key, file_name=f"{key}.jpg", dedup_key=b64(data), is_canonical=True, type=1,
+        media_key=key, file_name=f"{key}.jpg", dedup_key=b64(data), is_canonical=True, type=kw.pop("type", 1),
         caption=kw.pop("caption", None),
         collection_id="", size_bytes=len(data), quota_charged_bytes=len(data) if quota is None else quota,
-        origin=kw.pop("origin", "self"), content_version=1, utc_timestamp=1_700_000_000_000,
+        origin=kw.pop("origin", "self"), content_version=1, utc_timestamp=kw.pop("utc_timestamp", 1_700_000_000_000),
         server_creation_timestamp=0, **kw,
     )  # fmt: skip
 
@@ -109,6 +109,12 @@ def library(tmp_path, monkeypatch, media):
     return db
 
 
+def step(client):
+    """One step, as if the waits between asking Google had passed."""
+    sync._reclaim_checked.clear()
+    return sync.reclaim_step(lambda a: client)
+
+
 def test_report_lists_what_counts_biggest_first(library):
     sync.q("INSERT INTO files (path, status, account, sha1) VALUES ('x', 'uploaded', ?, ?)",
            (ACC, hashlib.sha1(b"free").hexdigest()))  # fmt: skip
@@ -123,21 +129,21 @@ def test_whole_round_trip(library):
     google = {b64(DATA)}
     client = FakeClient(library, google)
     sync.reclaim_queue(ACC, ["BIG"])
-    assert sync.reclaim_step(lambda a: client)
+    assert step(client)
     row = sync.q("SELECT state, local FROM reclaim WHERE media_key='BIG'")[0]
     assert row[0] == "downloaded" and sync.Path(row[1]).read_bytes() == DATA
 
     # Still in Google: nothing is uploaded.
-    sync.reclaim_step(lambda a: client)
+    step(client)
     assert client.uploads == []
 
     google.clear()  # the user deleted it in Google Photos
-    sync.reclaim_step(lambda a: client)
+    step(client)
     assert client.uploads == [(DATA, False, False, 1_700_000_000)]  # free upload, original date
     assert ("favorite", b64(DATA), True) in client.api.calls and ("caption", b64(DATA), "Goa") in client.api.calls
     assert sync.q("SELECT state FROM reclaim WHERE media_key='BIG'")[0][0] == "checking"
 
-    sync.reclaim_step(lambda a: client)
+    step(client)
     assert sync.q("SELECT state, local FROM reclaim WHERE media_key='BIG'")[0] == ("done", "")
     assert not (sync.RECLAIM_DIR / ACC / "BIG").exists()
     assert sync.storage_report(ACC)["freed"] == {"count": 1, "bytes": len(DATA)}
@@ -145,7 +151,7 @@ def test_whole_round_trip(library):
 
 def test_refuses_a_download_that_is_not_the_original(library):
     sync.reclaim_queue(ACC, ["SMALL"])  # the fake serves other bytes for it
-    sync.reclaim_step(lambda a: FakeClient(library, set()))
+    step(FakeClient(library, set()))
     state, error, local = sync.q("SELECT state, error, local FROM reclaim WHERE media_key='SMALL'")[0]
     assert state == "failed" and "not exactly" in error and not local
     assert not list((sync.RECLAIM_DIR / ACC / "SMALL").glob("*.jpg"))
@@ -155,7 +161,7 @@ def test_stops_when_google_counts_the_new_upload(library):
     client = FakeClient(library, set(), new_quota=123)
     sync.reclaim_queue(ACC, ["BIG"])
     for _ in range(3):
-        sync.reclaim_step(lambda a: client)
+        step(client)
     assert sync.q("SELECT state FROM reclaim WHERE media_key='BIG'")[0][0] == "counts"
     assert sync.reclaim_blocked(ACC) and sync.storage_report(ACC)["blocked"]
     assert (sync.RECLAIM_DIR / ACC / "BIG").exists()  # the downloaded copy is kept
@@ -163,7 +169,7 @@ def test_stops_when_google_counts_the_new_upload(library):
 
 def test_cancel_removes_the_downloaded_copy(library):
     sync.reclaim_queue(ACC, ["BIG"])
-    sync.reclaim_step(lambda a: FakeClient(library, {b64(DATA)}))
+    step(FakeClient(library, {b64(DATA)}))
     assert sync.reclaim_cancel(ACC, ["BIG"]) == {"cancelled": 1}
     assert not (sync.RECLAIM_DIR / ACC / "BIG").exists()
 
@@ -176,3 +182,51 @@ def test_storage_api(library, server):
     )
     with pytest.raises(urllib.error.HTTPError):
         urllib.request.urlopen(req)
+
+
+class CountingApi(FakeApi):
+    asked = 0
+
+    def find_remote_media_by_hash(self, digest):
+        CountingApi.asked += 1
+        return super().find_remote_media_by_hash(digest)
+
+
+def test_waiting_items_are_not_asked_about_every_second(library):
+    client = FakeClient(library, {b64(DATA)})
+    client.api = CountingApi(client.api.google)
+    sync.reclaim_queue(ACC, ["BIG", "SMALL"])
+    step(client)  # downloads BIG
+    CountingApi.asked = 0
+    for _ in range(5):
+        sync.reclaim_step(lambda a: client)  # SMALL's download fails; BIG waits for the user
+    assert CountingApi.asked == 1
+
+
+def test_download_waits_during_an_outage(library, monkeypatch):
+    import requests
+
+    def offline(url, **kw):
+        raise requests.ConnectionError("offline")
+
+    monkeypatch.setattr("requests.get", offline)
+    sync.reclaim_queue(ACC, ["BIG"])
+    assert not step(FakeClient(library, set()))
+    assert sync.q("SELECT state FROM reclaim WHERE media_key='BIG'")[0][0] == "queued"
+    assert "No connection" in sync.storage_report(ACC)["error"]
+    sync.reclaim_state["error"] = ""
+
+
+def test_one_login_per_account(monkeypatch):
+    made = []
+
+    class Client:
+        def __init__(self, auth_data, log_level):
+            made.append(auth_data)
+
+    import gpmc
+
+    monkeypatch.setattr(gpmc, "Client", Client)
+    monkeypatch.setattr(sync, "_clients", {})
+    assert sync._reclaim_client(ACC) is sync._reclaim_client(ACC)
+    assert len(made) == 1

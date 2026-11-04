@@ -160,7 +160,7 @@ function render(): void {
     ${r.error ? `<section class="card mb-4 p-4 text-sm text-bad">${esc(r.error)}</section>` : ""}
     <div class="grid grid-cols-2 gap-4 xl:grid-cols-4">
       ${tile({ label: "Counts against storage", value: bytes(r.counted_bytes), ic: "cloud", sub: `${num(r.counted)} of ${num(r.total)} items` })}
-      ${tile({ label: "Freed by GP Sync", value: bytes(r.freed.bytes), ic: "sparkles", sub: `${num(r.freed.count)} items moved`, tone: r.freed.count ? "good" : "" })}
+      ${tile({ label: "Freed by GP Sync", value: bytes(r.freed.bytes), ic: "sparkles", sub: `${num(r.freed.count)} item${r.freed.count === 1 ? "" : "s"} moved`, tone: r.freed.count ? "good" : "" })}
       ${tile({ label: "Waiting for you", value: num(waiting), ic: "hourglass", sub: waiting ? "Delete them in Google Photos" : "Nothing to delete" })}
       ${tile({
         label: "GP Sync uploads",
