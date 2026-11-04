@@ -1,19 +1,70 @@
+<div align="center">
+
+<img src="icon.svg" width="112" alt="GP Sync icon">
+
 # GP Sync
 
-Back up the photos and videos on your server to Google Photos, in original quality: any folder on
-Linux, Windows, macOS, a NAS, an [Immich](https://immich.app) library, or Umbrel. One Docker image
-(amd64 and arm64); see [Run it anywhere](#run-it-anywhere). On Umbrel, install it from the
-community app store [kshanxs/kshanxs-umbrel-store](https://github.com/kshanxs/kshanxs-umbrel-store).
+**Your photos, safely in Google Photos.**<br>
+Back up any folder on your server, NAS, Immich library or Umbrel in original quality, automatically.
 
-Uploads use [gpmc](https://github.com/xob0t/google_photos_mobile_client), which talks to Google
-Photos like the Android app.
+[![Docker Hub](https://img.shields.io/docker/v/kshanxs/gp-sync?sort=semver&logo=docker&logoColor=white&label=Docker%20Hub&color=0a84ff)](https://hub.docker.com/r/kshanxs/gp-sync)
+[![Release](https://img.shields.io/github/v/release/kshanxs/gp-sync?logo=github&color=0a84ff)](https://github.com/kshanxs/gp-sync/releases)
+[![Tests](https://github.com/kshanxs/gp-sync/actions/workflows/release.yml/badge.svg)](https://github.com/kshanxs/gp-sync/actions/workflows/release.yml)
+![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-5e5ce6)
+[![License: MIT](https://img.shields.io/badge/license-MIT-30d158)](LICENSE)
 
-- Checks for new files every 5 minutes (or click **Scan now**).
-- Waits until a file has stopped changing for 2 minutes, so half-copied files are not sent.
+[**Install on Umbrel**](#install-on-umbrel) · [**Run with Docker**](#run-it-anywhere) · [**Features**](#features) · [**Changelog**](CHANGELOG.md)
+
+<br>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/overview-dark.webp">
+  <img src="docs/overview-light.webp" alt="GP Sync dashboard: backup progress, network speed and status at a glance" width="100%">
+</picture>
+
+</div>
+
+<br>
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><b>☁️ Set and forget</b><br>Checks your folders every 5 minutes and sends new photos and videos in original quality. Files already in Google Photos are skipped.</td>
+    <td width="33%" valign="top"><b>👥 Up to 5 accounts</b><br>Back each folder up to one Google account or several at once. Every copy is tracked and retried on its own.</td>
+    <td width="33%" valign="top"><b>🔒 Read-only by design</b><br>Your folders are mounted read-only: nothing on your server is ever changed or deleted.</td>
+  </tr>
+  <tr>
+    <td valign="top"><b>📱 A real phone app</b><br>Install it on iPhone or Android, upload from the gallery or camera, and pick up where you left off if Wi-Fi drops.</td>
+    <td valign="top"><b>📊 Beautiful insights</b><br>Live progress, network and resource charts, history, upload times, duplicates, in dark and light.</td>
+    <td valign="top"><b>🖥️ Runs anywhere</b><br>One small Docker image for Linux, Windows, macOS, NAS boxes, Raspberry Pi, Immich setups and Umbrel.</td>
+  </tr>
+</table>
+
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/phone-dark.webp">
+  <img src="docs/phone-light.webp" alt="GP Sync on a phone" width="260">
+</picture>
+</div>
+
+## Install on Umbrel
+
+1. In the Umbrel **App Store**, open **⋯ → Community App Stores**.
+2. Add `https://github.com/kshanxs/kshanxs-umbrel-store` and open **kshanx's App**.
+3. Install **GP Sync**, then connect your Google account in **Settings → Google accounts**.
+
+Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
+
+## How it works
+
+- Checks for new files every 5 minutes (or tap **Scan now**), and waits until a file has stopped
+  changing for 2 minutes, so half-copied files are not sent.
 - Skips files that are already in Google Photos.
-- Folders are mounted read-only: nothing on your server is changed or deleted. Deleting a file there does not delete it from Google Photos.
-  The one writable folder is the upload folder (**Photos/Uploads** on Umbrel), where photos sent from your phone through the dashboard are saved.
+- Folders are mounted read-only: nothing on your server is changed or deleted. Deleting a file
+  there does not delete it from Google Photos. The one writable folder is the upload folder
+  (**Photos/Uploads** on Umbrel), where photos sent from your phone are saved.
 - A failed file is retried on later scans, up to 5 times. **Retry failed** resets the count.
+- Uploads use [gpmc](https://github.com/xob0t/google_photos_mobile_client), which talks to Google
+  Photos like the Android app.
 
 ## Features
 
