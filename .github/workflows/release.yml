@@ -1,0 +1,160 @@
+name: Test and release
+
+# Every push and pull request: lint and test. When VERSION names a version that has no
+# git tag yet, build the image (ghcr.io and Docker Hub) and tag the release. The Umbrel app store
+# (kshanxs/kshanxs-umbrel-store) picks up new images by itself every hour.
+# Mondays: try newer gpmc and dependencies; if every test passes, release a patch version.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 4 * * 1" # Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/kshanxs/gp-sync
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.7"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.node-version
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Try newer gpmc and dependencies
+        id: deps
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          changes=$(python3 scripts/update_deps.py)
+          echo "changes=$changes" >> "$GITHUB_OUTPUT"
+
+      - name: Dashboard (Vite+ check, test, build)
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npx vp check
+          npx vp test
+          npx vp build
+
+      - name: Lint and test
+        run: |
+          uv lock --check
+          uv sync --frozen
+          uv run --frozen ruff check . scripts
+          uv run --frozen ruff format --check . scripts
+          uv run --frozen pytest -q
+
+      - name: "Newer dependencies passed every test: next patch version"
+        if: steps.deps.outputs.changes != ''
+        run: |
+          python3 - <<'EOF'
+          from pathlib import Path
+          p = Path("VERSION")
+          a, b, c = p.read_text().split(".")
+          p.write_text(f"{a}.{b}.{int(c) + 1}\n")
+          EOF
+          v=$(cat VERSION)
+          python3 - "$v" "${{ steps.deps.outputs.changes }}" <<'EOF'
+          import json, sys
+          from pathlib import Path
+          v, changes = sys.argv[1], sys.argv[2]
+          pkg = Path("web/package.json")
+          data = json.loads(pkg.read_text()); data["version"] = v
+          pkg.write_text(json.dumps(data, indent=2) + "\n")
+          log = Path("CHANGELOG.md").read_text()
+          head, rest = log.split("\n## ", 1)
+          Path("CHANGELOG.md").write_text(f"{head}\n## {v}\n\nUpdated after all tests passed: {changes}.\n\n## {rest}")
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "GP Sync $v: newer dependencies"
+          git push
+
+      - name: Is a release needed?
+        id: check
+        run: |
+          v=$(cat VERSION)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then echo "needed=false"; else echo "needed=true"; fi >> "$GITHUB_OUTPUT"
+          # Release notes: this version's section of CHANGELOG.md, as one line.
+          python3 - "$v" > "$RUNNER_TEMP/notes.txt" <<'EOF'
+          import re, sys
+          text = open("CHANGELOG.md").read()
+          m = re.search(rf"^## {re.escape(sys.argv[1])}\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+          body = " ".join(l.strip("- ").strip() for l in (m.group(1) if m else "").splitlines() if l.strip())
+          print(body[:600] or "Maintenance release.")
+          EOF
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.check.outputs.needed == 'true' && github.event_name != 'pull_request'
+      - uses: docker/setup-buildx-action@v3
+        if: steps.check.outputs.needed == 'true' && github.event_name != 'pull_request'
+      - uses: docker/login-action@v3
+        if: steps.check.outputs.needed == 'true' && github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Docker Hub: secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Read & Write access token).
+      - uses: docker/login-action@v3
+        if: steps.check.outputs.needed == 'true' && github.event_name != 'pull_request'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        id: build
+        if: steps.check.outputs.needed == 'true' && github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          # Reuse unchanged layers (the ~90 MB Python packages) so updates download only what changed.
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+          build-args: |
+            BUILD_COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.check.outputs.version }}
+            ${{ env.IMAGE }}:latest
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/gp-sync:${{ steps.check.outputs.version }}
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/gp-sync:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/kshanxs/gp-sync
+            org.opencontainers.image.description=GP Sync: back up photo and video folders to Google Photos
+            org.opencontainers.image.licenses=MIT
+
+      - name: Tag the release
+        if: steps.build.outputs.digest != ''
+        run: |
+          git tag "v${{ steps.check.outputs.version }}"
+          git push origin "v${{ steps.check.outputs.version }}"
+
+      - name: GitHub release
+        if: steps.build.outputs.digest != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "v${{ steps.check.outputs.version }}" --title "GP Sync ${{ steps.check.outputs.version }}" --notes-file "$RUNNER_TEMP/notes.txt"

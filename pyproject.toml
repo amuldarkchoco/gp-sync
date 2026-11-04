@@ -1,0 +1,36 @@
+[project]
+name = "gphotos-sync"
+version = "1.0.0"
+description = "Back up a folder of photos and videos to Google Photos, with a small web dashboard."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Pinned exactly: sync.py uses gpmc's internal Client._upload_file.
+    # Raise it with .github/workflows/gphotos-sync.yml (tests must pass).
+    "gpmc==0.9.0",
+    # Turso (SQLite-compatible, open source) stores the daily statistics.
+    "pyturso==0.8.3",
+    # Thumbnails (pillow-heif opens iPhone HEIC photos).
+    "pillow==13.0.0",
+    "pillow-heif==1.8.1",
+    # Optional cache (the Umbrel app runs Redis next to it; without Redis a memory cache is used).
+    "redis==8.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
