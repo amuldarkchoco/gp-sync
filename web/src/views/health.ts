@@ -15,7 +15,15 @@ let timer = 0;
 let qTimer = 0;
 
 async function loadHealth(): Promise<void> {
-  h = await get<Health>("health");
+  try {
+    h = await get<Health>("health");
+  } catch (e) {
+    // Keep what is on screen; only say so when there is nothing to show yet.
+    const box = document.getElementById("hl-accounts");
+    if (!h && box)
+      box.innerHTML = `<div class="empty">${icon("warn")}Couldn't load: ${esc((e as Error).message)}</div>`;
+    return;
+  }
   render();
 }
 
@@ -36,7 +44,7 @@ function render(): void {
             (
               a,
             ) => `<div class="row"><span class="grid size-9 place-items-center rounded-full bg-panel-2 text-sm font-semibold uppercase">${esc(a.email[0] ?? "?")}</span>
-            <div class="min-w-0 flex-1"><div class="truncate text-sm font-medium">${esc(a.email)}</div><div class="text-xs text-ink-3">Login saved ${date(a.login_saved, true)} · last upload ${ago(a.last_success)}</div></div>
+            <div class="min-w-0 flex-1"><div class="truncate text-sm font-medium">${esc(a.email)}</div><div class="text-xs text-ink-3">Login saved ${a.login_saved ? date(a.login_saved, true) : "unknown"} · last upload ${ago(a.last_success)}</div></div>
             ${a.login_rejected ? badge("Rejected", "bad", "warn") : badge("OK", "good", "ok")}</div>`,
           )
           .join("")
@@ -93,9 +101,13 @@ function cacheBox(x: Health): string {
 
 async function loadLogs(reset: boolean): Promise<void> {
   const before = reset || !logs.length ? "" : `&before=${logs[logs.length - 1]!.time}`;
-  const r = await get<{ items: AppLog[] }>(
-    `logs?level=${level}&q=${encodeURIComponent(q)}&limit=200${before}`,
-  );
+  let r: { items: AppLog[] };
+  try {
+    r = await get<{ items: AppLog[] }>(`logs?level=${level}&q=${encodeURIComponent(q)}&limit=200${before}`);
+  } catch (e) {
+    toast(`App log: ${(e as Error).message}`, "bad");
+    return;
+  }
   logs = reset ? r.items : logs.concat(r.items);
   const box = document.getElementById("hl-logs");
   if (!box) return;
@@ -170,7 +182,7 @@ const health: View = {
         .join("\n");
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
-      a.download = `gphotos-sync-log-${new Date().toISOString().slice(0, 10)}.txt`;
+      a.download = `gp-sync-log-${new Date().toISOString().slice(0, 10)}.txt`;
       a.click();
       URL.revokeObjectURL(a.href);
     });

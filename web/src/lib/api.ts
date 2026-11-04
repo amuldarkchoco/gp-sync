@@ -201,7 +201,12 @@ export interface Health {
     misses: number;
     hit_rate: number;
   };
-  accounts: { email: string; login_saved: number; last_success: number | null; login_rejected: boolean }[];
+  accounts: {
+    email: string;
+    login_saved: number | null;
+    last_success: number | null;
+    login_rejected: boolean;
+  }[];
   phase: string;
   error: string;
   last_scan: number;

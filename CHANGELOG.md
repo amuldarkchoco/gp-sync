@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.3
+
+- Health: the page no longer fails to load when a Google login file is named differently from
+  the account inside it, and Remove now deletes such a login too
+- Health: if the page can't reach the app it says so instead of staying empty
+- Settings › App & appearance: the Install button appears as soon as the browser offers to install
+- Settings: an old or mistyped settings link opens Sync with Sync marked in the menu
+- App log download is named gp-sync-log-<date>.txt
+- Code: Python moved to backend/, the dashboard stays in web/ (files moved with git, history kept)
+
 ## 1.0.2
 
 - Settings menu: each section has a colored icon (like iOS Settings), the rows have a little

@@ -287,6 +287,17 @@ def _account_file(email):
     return ACCOUNTS_DIR / f"{safe}.auth"
 
 
+def _account_paths():
+    """{email: [auth files]} read from the files themselves: a file's name can differ from the
+    email inside it (an older version, or a login whose email could not be read)."""
+    found = {}
+    for f in ACCOUNTS_DIR.glob("*.auth"):
+        auth = f.read_text().strip()
+        if auth:
+            found.setdefault(email_of(auth), []).append(f)
+    return found
+
+
 def migrate_accounts():
     """Older installs: the single auth_data file becomes the first account."""
     ACCOUNTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -354,9 +365,10 @@ def save_account(auth):
 
 
 def remove_account(email):
-    f = _account_file(email)
-    if f.exists():
-        f.unlink()
+    files = _account_paths().get(email) or [f for f in [_account_file(email)] if f.exists()]
+    if files:
+        for f in files:
+            f.unlink(missing_ok=True)
         meta_set("account_order", json.dumps([e for e in _account_order() if e != email]))
         log(f"Removed Google account {email}", "account")
         return True
@@ -1747,10 +1759,11 @@ def health():
         return sum(f.stat().st_size for f in Path(p).parent.glob(Path(p).name + "*") if f.is_file())
 
     last_ok = dict(q("SELECT account, MAX(updated) FROM files WHERE status IN ('uploaded','exists') GROUP BY account"))
+    paths = _account_paths()
     accs = [
         {
             "email": email,
-            "login_saved": _account_file(email).stat().st_mtime,
+            "login_saved": max((f.stat().st_mtime for f in paths.get(email, [])), default=None),
             "last_success": last_ok.get(email),
             "login_rejected": email in state["login_failed"],
         }

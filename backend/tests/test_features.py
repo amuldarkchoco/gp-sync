@@ -87,6 +87,18 @@ def test_accounts_api(server, media):
     assert [a for a, _ in sync.accounts()] == ["test@example.com"]
 
 
+def test_account_file_named_differently(server, media):
+    # A login file whose name is not the email inside it: Health still loads and Remove deletes it.
+    odd = sync.ACCOUNTS_DIR / "renamed.auth"
+    odd.write_text(OTHER_AUTH)
+    with urllib.request.urlopen(server + "/api/health") as r:
+        accs = {a["email"]: a for a in json.load(r)["accounts"]}
+    assert accs["family@example.com"]["login_saved"] > 0
+    code, body = post(server + "/api/accounts/remove", json.dumps({"email": "family@example.com"}).encode())
+    assert code == 200 and json.loads(body)["ok"] is True and not odd.exists()
+    assert [a for a, _ in sync.accounts()] == ["test@example.com"]
+
+
 # --- wave 1: schedule and speed limit
 
 

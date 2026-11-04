@@ -2,7 +2,7 @@ import { get, post, type Settings, type Status } from "../lib/api";
 import { $, $$, copyText, esc, html, toast } from "../lib/dom";
 import { bytes, hour, num } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
-import { capabilities, install, installHelp, installState } from "../lib/install";
+import { capabilities, install, installHelp, installState, onInstallChange } from "../lib/install";
 import { host, refresh, status } from "../lib/store";
 import { setTheme, theme as currentTheme } from "../lib/theme";
 import { badge, cardHead, syncChips } from "../lib/ui";
@@ -416,6 +416,12 @@ function sectionApi(): string {
 }
 
 let drawnWithStatus = false;
+let offInstall: (() => void) | null = null;
+
+/** A known section key; anything else (an old or mistyped link) opens Sync. */
+function sectionKey(key: string | undefined): string {
+  return SECTIONS.some(([k]) => k === key) ? (key as string) : "sync";
+}
 
 function renderSection(): void {
   drawnWithStatus = status() !== null;
@@ -434,7 +440,7 @@ function renderSection(): void {
     app: sectionApp,
     api: sectionApi,
   };
-  const key = map[section] ? section : "sync";
+  const key = sectionKey(section);
   body.innerHTML = `${sectionHead(key)}${map[key]!()}`;
   // Phones: keep the chosen tab in view in the scrolling row.
   document
@@ -626,7 +632,12 @@ function wire(): void {
 const settings: View = {
   subtitle: "How and when your library is backed up",
   mount(el, args) {
-    section = SECTIONS.some(([k]) => k === args[0]) ? (args[0] as string) : "sync";
+    section = sectionKey(args[0]);
+    // The browser can offer installing a moment after the page opens: redraw the install card then.
+    offInstall?.();
+    offInstall = onInstallChange(() => {
+      if (section === "app" && cfg) renderSection();
+    });
     el.innerHTML = `
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
       <nav class="lg:col-span-4 xl:col-span-3" aria-label="Settings sections">
@@ -650,8 +661,12 @@ const settings: View = {
     });
   },
   route(args) {
-    section = args[0] ?? "sync";
+    section = sectionKey(args[0]);
     if (cfg) renderSection();
+  },
+  unmount() {
+    offInstall?.();
+    offInstall = null;
   },
   update(s) {
     // Opened straight from a link: the section may have been drawn before the first status.
