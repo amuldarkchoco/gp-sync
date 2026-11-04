@@ -10,6 +10,7 @@ import collections
 import contextlib
 import fnmatch
 import hashlib
+import heapq
 import hmac
 import http.cookies
 import json
@@ -70,7 +71,7 @@ EXTS = PHOTO_EXTS | VIDEO_EXTS
 THUMB_EXTS = {"jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "bmp", "tif", "tiff", "avif"}
 DONE = ("uploaded", "exists")
 # Top-level folders backed up until folders are chosen in Settings (FOLDERS="Photos,Videos" by
-# default; when none of them exist, every folder is backed up).
+# default; when none of them exist, every folder is backed up, mtime).
 DEFAULT_FOLDERS = tuple(f.strip() for f in os.environ.get("FOLDERS", "Photos,Videos").split(",") if f.strip())
 # Folder and file names never backed up (comma-separated patterns, * and ? allowed): NAS and
 # system clutter, and Immich's transcoded videos. Hidden names (starting with ".") are skipped too.
@@ -1196,6 +1197,7 @@ def scan(st=None):
                         and row[1] == fst.st_mtime
                         and row[2] in DONE
                         and row[4] in (account, None),
+                        fst.st_mtime,
                     )
                 )
                 if not account:
@@ -1300,15 +1302,19 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
             sub = parts[depth] if len(parts) > depth + 1 else ""
             return (sub, prefix + sub if sub else path)
 
-    for name, video, size, added, synced in index:
+    for name, video, size, added, synced, *_ in index:
         k = key_of(name)
         if k is None:
             continue
         label, folder = k
         g = groups.get(label)
         if g is None:
-            g = groups[label] = {**_blank(), "folders": set(), "sub": False, "daily": {}}
+            g = groups[label] = {**_blank(), "folders": set(), "sub": False, "daily": {}, "recent": []}
         g["folders"].add(folder)
+        if len(g["recent"]) < 4:
+            heapq.heappush(g["recent"], (added, name))
+        elif added > g["recent"][0][0]:
+            heapq.heapreplace(g["recent"], (added, name))
         if label and name.count("/") > folder.count("/") + 1:
             g["sub"] = True  # has folders inside: the dashboard can open it
         for d in (total, g):
@@ -1347,9 +1353,14 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
                 "last_added": g["last_added"],
                 "series": [g["daily"].get(n, 0) for n in range(first, today + 1)],
                 "uploads": group == "devices" and uploads in g["folders"],
+                "recent": [n for _, n in sorted(g["recent"], reverse=True)],
             }
         )
     children.sort(key=lambda c: (c["name"] == "", -c["files"], c["name"].lower()))
+    # Phone backup apps spread files over folders 00..ff. Those folders mean nothing to a person:
+    # don't list them, the dashboard shows the photos of the whole folder instead.
+    named = [c["name"] for c in children if c["name"]]
+    buckets = group == "folders" and len(named) >= 4 and all(BUCKET.fullmatch(n) for n in named)
     return {
         "ready": bool(state["last_scan"]),
         "path": path if group == "folders" else "",
@@ -1368,7 +1379,65 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
             {"day": day_str(n), "photos": daily.get(n, [0, 0])[0], "videos": daily.get(n, [0, 0])[1]}
             for n in range(first, today + 1)
         ],
-        "children": children,
+        "children": [] if buckets else children,
+        "buckets": buckets,
+    }
+
+
+BUCKET = re.compile(r"[0-9a-f]{2}", re.I)
+FILE_SORTS = {
+    "new": (lambda e: e[3], True),
+    "old": (lambda e: e[3], False),
+    "size": (lambda e: e[2], True),
+    "name": (lambda e: e[0].rsplit("/", 1)[-1].lower(), False),
+}
+
+
+def folder_files(path="", status="all", kind="all", sort="new", offset=0, limit=60):
+    """Every photo and video in a folder and the folders inside it, backed up yet or not."""
+    prefix = path + "/" if path else ""
+    entries = [e for e in state["index"] if e[0].startswith(prefix)]
+    states = {
+        rel(p): (st, err)
+        for p, st, err in q(
+            "SELECT path, status, error FROM files WHERE path LIKE ? ESCAPE '\\'",
+            (str(MEDIA / prefix).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
+        )
+    }
+
+    def state_of(e):
+        st = states.get(e[0], (None, ""))[0]
+        if e[4] or st in DONE:  # backed up at the last scan, or uploaded since
+            return "backed_up"
+        return "failed" if st == "failed" else "waiting"
+
+    counts = {"all": len(entries), "backed_up": 0, "waiting": 0, "failed": 0, "photo": 0, "video": 0}
+    for e in entries:
+        counts[state_of(e)] += 1
+        counts["video" if e[1] else "photo"] += 1
+    picked = [
+        e
+        for e in entries
+        if (status == "all" or state_of(e) == status) and (kind == "all" or (kind == "video") == e[1])
+    ]
+    key, reverse = FILE_SORTS.get(sort, FILE_SORTS["new"])
+    picked.sort(key=key, reverse=reverse)
+    return {
+        "path": path,
+        "total": len(picked),
+        "counts": counts,
+        "items": [
+            {
+                "name": e[0],
+                "kind": "video" if e[1] else "photo",
+                "size": e[2],
+                "added": e[3],
+                "mtime": int(e[5]) if len(e) > 5 else 0,
+                "state": state_of(e),
+                "error": states.get(e[0], (None, ""))[1] or "",
+            }
+            for e in picked[offset : offset + limit]
+        ],
     }
 
 
@@ -3277,6 +3346,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/storage/thumb":
             account, key = arg("account", ""), arg("key", "")
             self.image("gthumb", f"{account}\n{key}", google_thumb)
+        elif path == "/api/folders/files":
+            folder = clean_folder(arg("path", ""))
+            if folder is None:
+                self.json({"error": "bad folder"}, 400)
+                return
+            args = (folder, arg("status", "all"), arg("kind", "all"), arg("sort", "new"),
+                    arg("offset", 0, 0, 10**9), arg("limit", 60, 1, 500))  # fmt: skip
+            self.cached(f"ffiles:{json.dumps(args)}:{state['last_scan']}", 30, lambda: folder_files(*args))
         elif path == "/api/totals":
             self.cached("totals", 60, totals)
         elif path == "/api/settings":

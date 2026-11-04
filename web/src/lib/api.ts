@@ -280,6 +280,8 @@ export interface FolderGroup {
   series: number[];
   /** True for the folder this app's Upload page writes to. */
   uploads: boolean;
+  /** Its newest files (up to 4), for thumbnails. */
+  recent?: string[];
 }
 export interface FolderReport {
   ready: boolean;
@@ -302,6 +304,22 @@ export interface FolderReport {
   };
   daily: { day: string; photos: number; videos: number }[];
   children: FolderGroup[];
+  /** The subfolders were a backup app's 00..ff folders: not listed, the photos are shown instead. */
+  buckets?: boolean;
+}
+export interface FolderFiles {
+  path: string;
+  total: number;
+  counts: { all: number; backed_up: number; waiting: number; failed: number; photo: number; video: number };
+  items: {
+    name: string;
+    kind: "photo" | "video";
+    size: number;
+    added: number;
+    mtime: number;
+    state: "backed_up" | "waiting" | "failed";
+    error: string;
+  }[];
 }
 export interface Duplicates {
   groups: { sha1: string; count: number; size: number; wasted: number; files: string[] }[];

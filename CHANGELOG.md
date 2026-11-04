@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.3
+
+- Folders redesigned: devices and folders come first, under one compact summary (the chart moved
+  to the bottom, with its 7 d to 1 y switch). Each device shows thumbnails of its newest photos
+- Opening a device or folder shows its photos and videos right there, backed up or not, with
+  In Google / Waiting / Failed badges, photo/video filter, sorting and endless scrolling. Before,
+  folders opened Library, which only lists uploaded files, so many looked empty
+- Backup apps' 00..ff folders are no longer listed: the device's photos are shown instead
+- A device keeps its name in the path (Devices › iPhone), and files named by a long code show
+  their date as the title
+
 ## 1.1.2
 
 - New Copy accounts page: copies everything one connected Google account owns to another,

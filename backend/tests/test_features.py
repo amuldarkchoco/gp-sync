@@ -520,3 +520,31 @@ def test_folders_api_rejects_unsafe_paths(media, server):
     with pytest.raises(urllib.error.HTTPError) as bad:
         urllib.request.urlopen(f"{server}/api/folders?path=../etc")
     assert bad.value.code == 400
+
+
+def test_backup_app_buckets_are_hidden_and_files_listed(media):
+    for b in ("0a", "1f", "b2", "ff"):
+        (media / "Photos" / "iPhone" / b).mkdir(parents=True, exist_ok=True)
+        (media / "Photos" / "iPhone" / b / f"{b}.jpg").write_bytes(b"p" * 10)
+    sync.scan()
+    sync.state["last_scan"] = time.time()
+    r = sync.folder_report("Photos/iPhone", "folders", 30)
+    assert r["buckets"] and r["children"] == [] and r["total"]["files"] == 4
+    devices = sync.folder_report("", "devices", 30)["children"]
+    assert len(next(d for d in devices if d["name"] == "iPhone")["recent"]) == 4
+
+    # Nothing is uploaded yet: the files still show, as waiting (Library would be empty).
+    f = sync.folder_files("Photos/iPhone")
+    assert f["total"] == 4 and {i["state"] for i in f["items"]} == {"waiting"}
+    sync.q("INSERT INTO files (path, size, mtime, status) VALUES (?, 10, 0, 'uploaded')",
+           (str(media / "Photos/iPhone/0a/0a.jpg"),))  # fmt: skip
+    sync.q("INSERT INTO files (path, size, mtime, status, error) VALUES (?, 10, 0, 'failed', 'bad file')",
+           (str(media / "Photos/iPhone/ff/ff.jpg"),))  # fmt: skip
+    f = sync.folder_files("Photos/iPhone")
+    assert f["counts"] == {"all": 4, "backed_up": 1, "waiting": 2, "failed": 1, "photo": 4, "video": 0}
+    assert [i["name"] for i in sync.folder_files("Photos/iPhone", status="failed")["items"]] == [
+        "Photos/iPhone/ff/ff.jpg"
+    ]
+    assert sync.folder_files("Photos/iPhone", status="failed")["items"][0]["error"] == "bad file"
+    assert sync.folder_files("Photos/iPhone", kind="video")["total"] == 0
+    assert sync.folder_files("Photos/iPhone", limit=2, offset=3)["items"][0]["name"].endswith(".jpg")
