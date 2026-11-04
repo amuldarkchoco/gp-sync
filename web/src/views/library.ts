@@ -130,6 +130,7 @@ async function loadDuplicates(): Promise<void> {
 
 function folderOptions(s: Status | null): string {
   const names = s ? Object.keys(s.folders).filter((f) => s.folders[f]?.files) : [];
+  if (folder && !names.includes(folder)) names.push(folder); // a deeper folder, opened from Folders
   return `<option value="">All folders</option>${names.map((n) => `<option ${n === folder ? "selected" : ""}>${esc(n)}</option>`).join("")}`;
 }
 
@@ -149,6 +150,7 @@ const library: View = {
   subtitle: "Every photo and video the app knows about",
   mount(el, args) {
     tab = args[0] === "duplicates" ? "dups" : "files";
+    if (args[0] === "folder") folder = args.slice(1).map(decodeURIComponent).join("/");
     el.innerHTML = `
     <section class="card mb-4 flex flex-wrap items-center gap-2 p-3">
       <div class="seg" id="lib-tab"><button data-t="files">${icon("library")}Files</button><button data-t="dups">${icon("copy")}Duplicates</button></div>
@@ -208,7 +210,8 @@ const library: View = {
   },
   update(s) {
     const sel = document.getElementById("lib-folder") as HTMLSelectElement | null;
-    if (sel && sel.options.length <= 1 && Object.keys(s.folders).length) sel.innerHTML = folderOptions(s);
+    if (sel && sel.options.length <= (folder ? 2 : 1) && Object.keys(s.folders).length)
+      sel.innerHTML = folderOptions(s);
   },
 };
 

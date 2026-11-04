@@ -13,12 +13,14 @@ import type { View } from "./views/view";
 import about from "./views/about";
 import activity from "./views/activity";
 import health from "./views/health";
+import folders from "./views/folders";
 import historyView from "./views/history";
 import insights from "./views/insights";
 import library from "./views/library";
 import network from "./views/network";
 import overview from "./views/overview";
 import settings from "./views/settings";
+import storage from "./views/storage";
 import upload from "./views/upload";
 
 interface Route {
@@ -34,6 +36,8 @@ const ROUTES: Route[] = [
   { id: "upload", title: "Upload", ic: "upload", view: upload, group: "Backup" },
   { id: "activity", title: "Activity", ic: "activity", view: activity, group: "Backup" },
   { id: "library", title: "Library", ic: "library", view: library, group: "Backup" },
+  { id: "storage", title: "Free storage", ic: "cloud", view: storage, group: "Backup" },
+  { id: "folders", title: "Folders", ic: "folder", view: folders, group: "Insights" },
   { id: "history", title: "History", ic: "calendar", view: historyView, group: "Insights" },
   { id: "insights", title: "Insights", ic: "chart", view: insights, group: "Insights" },
   { id: "network", title: "Network", ic: "wifi", view: network, group: "Insights" },

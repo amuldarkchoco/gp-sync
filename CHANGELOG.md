@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.0
+
+- New Folders page (Insights): photos, videos, size and how much is backed up for any folder,
+  opened one level at a time, plus a Devices view with one row per phone (the folders phone
+  backup apps make, such as Photos/iPhone; "Pixel" and "Pixel (2)" count as one device)
+- Added per day: a chart of new photos and videos for the folder or device (7 days to a year),
+  and a small trend line with the new count for each subfolder or device
+- Files are dated by when they arrived on the server, not the photo's own date
+- Overview folder names open the Folders page; Library can show any folder, however deep
+- New Free storage page: lists the photos and videos that count against your Google storage,
+  biggest first, and moves them to free uploads one at a time. GP Sync downloads each one and
+  checks it is exactly Google's original; you delete it in Google Photos (GP Sync never deletes
+  anything there); GP Sync notices, uploads it again the free way with its date, favourite,
+  archive and caption, and checks with Google that it no longer counts. Albums and shared links
+  don't come back. If Google counts a re-upload, everything stops
+- The page also shows whether GP Sync's own uploads count against storage (they shouldn't)
+
 ## 1.0.3
 
 - Health: the page no longer fails to load when a Google login file is named differently from

@@ -407,7 +407,7 @@ const overview: View = {
         .filter(([, f]) => f.account && f.files)
         .map(([name, f]) => {
           const fp = pct(f.synced_files, f.files);
-          return `<div><div class="mb-1 flex items-center justify-between text-xs"><span class="flex items-center gap-1.5 font-medium">${icon("folder", "size-3.5 text-ink-3")}${esc(name)}</span><span class="text-ink-3 tabular-nums">${num(f.synced_files)} / ${num(f.files)}</span></div><div class="bar"><i style="width:${fp}%"></i></div></div>`;
+          return `<div><div class="mb-1 flex items-center justify-between text-xs"><a class="flex items-center gap-1.5 font-medium hover:underline" href="#/folders/f/${encodeURIComponent(name)}">${icon("folder", "size-3.5 text-ink-3")}${esc(name)}</a><span class="text-ink-3 tabular-nums">${num(f.synced_files)} / ${num(f.files)}</span></div><div class="bar"><i style="width:${fp}%"></i></div></div>`;
         })
         .join(""),
     );

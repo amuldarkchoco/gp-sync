@@ -261,11 +261,94 @@ export interface FileItem {
   google_url: string;
   mtime?: number;
 }
+export interface FolderGroup {
+  /** Subfolder or device name; "" = files sitting in the folder itself. */
+  name: string;
+  /** Folders it covers (a device can have several, e.g. "Photos/Pixel" and "Photos/Pixel (2)"). */
+  folders: string[];
+  has_sub: boolean;
+  files: number;
+  photos: number;
+  videos: number;
+  bytes: number;
+  synced: number;
+  /** Files added in the chosen range. */
+  new: number;
+  new_week: number;
+  last_added: number;
+  /** Files added per day over the range, oldest first. */
+  series: number[];
+  /** True for the folder this app's Upload page writes to. */
+  uploads: boolean;
+}
+export interface FolderReport {
+  ready: boolean;
+  path: string;
+  group: "folders" | "devices";
+  days: number;
+  today: string;
+  total: {
+    files: number;
+    photos: number;
+    videos: number;
+    bytes: number;
+    photo_bytes: number;
+    video_bytes: number;
+    synced: number;
+    new: number;
+    new_week: number;
+    new_day: number;
+    last_added: number;
+  };
+  daily: { day: string; photos: number; videos: number }[];
+  children: FolderGroup[];
+}
 export interface Duplicates {
   groups: { sha1: string; count: number; size: number; wasted: number; files: string[] }[];
   wasted: number;
   hashed: number;
   total: number;
+}
+export type ReclaimState =
+  | ""
+  | "queued"
+  | "downloaded"
+  | "in_google"
+  | "checking"
+  | "done"
+  | "counts"
+  | "counted"
+  | "failed";
+export interface StorageItem {
+  key: string;
+  name: string;
+  kind: "photo" | "video";
+  size: number;
+  /** Bytes it counts against Google storage. */
+  quota: number;
+  taken: number;
+  google_url: string;
+  state: ReclaimState;
+  error?: string;
+  updated?: number;
+}
+export interface StorageReport {
+  account: string;
+  listed: boolean;
+  refreshed: number | null;
+  refreshing: boolean;
+  error: string;
+  /** Google counted one of our re-uploads: nothing more is moved. */
+  blocked: boolean;
+  current: { key: string; step: "downloading" | "uploading"; done: number; total: number } | null;
+  free_space: number;
+  total: number;
+  counted: number;
+  counted_bytes: number;
+  /** GP Sync's own uploads found in the library, and how many of them count (should be 0). */
+  ours: { seen: number; counted: number };
+  freed: { count: number; bytes: number };
+  items: StorageItem[];
 }
 export interface UploadInfo {
   ready: boolean;

@@ -92,6 +92,7 @@ state = {
     "library": {"files": 0, "bytes": 0, "synced_files": 0, "synced_bytes": 0, "types": {}},
     "folders": {},  # top folder -> {"files", "bytes", "synced_files", "synced_bytes"}
     "pending": [],  # names waiting to upload (first 500)
+    "index": [],  # every media file from the last scan: (rel path, is video, size, added, backed up)
     "session": {"started": STARTED, "uploaded_files": 0, "uploaded_bytes": 0},
     "login_failed": set(),  # accounts Google rejected; cleared on success or a new login
     "next_window": 0,
@@ -168,6 +169,14 @@ def db():
             path TEXT NOT NULL, account TEXT NOT NULL, size INTEGER, mtime REAL, status TEXT,
             media_key TEXT, error TEXT, attempts INTEGER DEFAULT 0, updated REAL,
             PRIMARY KEY (path, account))"""
+    )
+    # Items moved out of Google storage (see "free up Google storage").
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS reclaim (
+            account TEXT NOT NULL, media_key TEXT NOT NULL, dedup_key TEXT, name TEXT, kind TEXT,
+            size INTEGER, quota INTEGER, taken REAL, favorite INTEGER, archived INTEGER, caption TEXT,
+            state TEXT, error TEXT, local TEXT, new_key TEXT, checks INTEGER DEFAULT 0, updated REAL,
+            PRIMARY KEY (account, media_key))"""
     )
     conn.execute("PRAGMA journal_mode=WAL")
     conn.commit()
@@ -1124,6 +1133,7 @@ def scan(st=None):
         for p, acc, s, m, status, a in q("SELECT path,account,size,mtime,status,attempts FROM copies")
     }
     todo = []
+    index = []
     copies_todo = []  # the same files for a folder's other accounts, after the main backup
     lib = {
         "files": 0,
@@ -1164,6 +1174,21 @@ def scan(st=None):
                 f = folders[top]
                 f["files"] += 1
                 f["bytes"] += fst.st_size
+                row = known.get(path)
+                index.append(
+                    (
+                        rel(path),
+                        ext(name) in VIDEO_EXTS,
+                        fst.st_size,
+                        added_time(fst),
+                        bool(account)
+                        and bool(row)
+                        and row[0] == fst.st_size
+                        and row[1] == fst.st_mtime
+                        and row[2] in DONE
+                        and row[4] in (account, None),
+                    )
+                )
                 if not account:
                     continue  # folder not backed up
                 lib["files"] += 1
@@ -1188,7 +1213,6 @@ def scan(st=None):
                         q("UPDATE copies SET attempts=0 WHERE path=? AND account=?", (path, extra))
                     if settled:
                         copies_todo.append((path, fst.st_size, fst.st_mtime, extra, True))
-                row = known.get(path)
                 if row and row[0] == fst.st_size and row[1] == fst.st_mtime and row[4] in (account, None):
                     if row[2] in DONE:
                         for d in (lib, f):
@@ -1204,9 +1228,139 @@ def scan(st=None):
                 todo.append((path, fst.st_size, fst.st_mtime, account))
     state["library"] = lib
     state["folders"] = folders
+    state["index"] = index
     state["pending"] = [rel(p) for p, *_ in todo[:500]]
     state["copies_pending"] = len(copies_todo)
     return todo + copies_todo
+
+
+def added_time(fst):
+    """When a file arrived on this machine. mtime is often the photo's own date (kept by
+    copy tools), so use the inode change time when it is later."""
+    return max(fst.st_mtime, fst.st_ctime)
+
+
+def clean_folder(path):
+    """A folder path from the dashboard ("Photos/iPhone"), or None when it isn't safe."""
+    parts = [p for p in str(path or "").replace("\\", "/").split("/") if p]
+    if any(p in (".", "..") or skipped(p) for p in parts):
+        return None
+    return "/".join(parts)
+
+
+def _device_name(folder):
+    """Folders for the same phone get numbered when it pairs again ("I2220 (2)")."""
+    return re.sub(r" \(\d+\)$", "", folder)
+
+
+def _blank():
+    return {"photos": 0, "videos": 0, "photo_bytes": 0, "video_bytes": 0, "synced": 0, "new": 0, "last_added": 0}
+
+
+def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
+    """Counts for any folder: totals, files added per day, and the same per subfolder.
+
+    group="devices" lists the folders one level inside each backed-up top folder (where
+    phone backup apps put one folder per device), merged by device name."""
+    now = now or time.time()
+    shift = tz_offset_min * 60
+    today = int((now + shift) // 86400)
+    first = today - days + 1
+    index = state["index"]
+    total = _blank()
+    daily = {}  # day number -> [photos, videos]
+    groups = {}
+    if group == "devices":
+        backed = {t for t, a in folder_targets().items() if a}
+        uploads = upload_folder_name()
+
+        def key_of(name):
+            parts = name.split("/")
+            if len(parts) < 3 or parts[0] not in backed:
+                return None
+            folder = f"{parts[0]}/{parts[1]}"
+            return (_device_name(parts[1]), folder)
+    else:
+        prefix = path + "/" if path else ""
+        depth = len(prefix.split("/")) - 1 if prefix else 0
+
+        def key_of(name):
+            if not name.startswith(prefix):
+                return None
+            parts = name.split("/")
+            sub = parts[depth] if len(parts) > depth + 1 else ""
+            return (sub, prefix + sub if sub else path)
+
+    for name, video, size, added, synced in index:
+        k = key_of(name)
+        if k is None:
+            continue
+        label, folder = k
+        g = groups.get(label)
+        if g is None:
+            g = groups[label] = {**_blank(), "folders": set(), "sub": False, "daily": {}}
+        g["folders"].add(folder)
+        if label and name.count("/") > folder.count("/") + 1:
+            g["sub"] = True  # has folders inside: the dashboard can open it
+        for d in (total, g):
+            d["videos" if video else "photos"] += 1
+            d["video_bytes" if video else "photo_bytes"] += size
+            d["synced"] += synced
+            d["last_added"] = max(d["last_added"], added)
+        day = int((added + shift) // 86400)
+        if day >= first:
+            total["new"] += 1
+            g["new"] += 1
+            daily.setdefault(day, [0, 0])[video] += 1
+            g["daily"][day] = g["daily"].get(day, 0) + 1
+
+    def day_str(n):
+        return time.strftime("%Y-%m-%d", time.gmtime(n * 86400))
+
+    def week(d):
+        return sum(c for day, c in d.items() if day > today - 7)
+
+    children = []
+    for label, g in groups.items():
+        files = g["photos"] + g["videos"]
+        children.append(
+            {
+                "name": label,
+                "folders": sorted(g["folders"]),
+                "has_sub": g["sub"],
+                "files": files,
+                "photos": g["photos"],
+                "videos": g["videos"],
+                "bytes": g["photo_bytes"] + g["video_bytes"],
+                "synced": g["synced"],
+                "new": g["new"],
+                "new_week": week(g["daily"]),
+                "last_added": g["last_added"],
+                "series": [g["daily"].get(n, 0) for n in range(first, today + 1)],
+                "uploads": group == "devices" and uploads in g["folders"],
+            }
+        )
+    children.sort(key=lambda c: (c["name"] == "", -c["files"], c["name"].lower()))
+    return {
+        "ready": bool(state["last_scan"]),
+        "path": path if group == "folders" else "",
+        "group": group,
+        "days": days,
+        "today": day_str(today),
+        "total": {
+            **{k: total[k] for k in ("photos", "videos", "photo_bytes", "video_bytes", "synced", "new")},
+            "files": total["photos"] + total["videos"],
+            "bytes": total["photo_bytes"] + total["video_bytes"],
+            "new_week": sum(p + v for day, (p, v) in daily.items() if day > today - 7),
+            "new_day": sum(p + v for day, (p, v) in daily.items() if day == today),
+            "last_added": total["last_added"],
+        },
+        "daily": [
+            {"day": day_str(n), "photos": daily.get(n, [0, 0])[0], "videos": daily.get(n, [0, 0])[1]}
+            for n in range(first, today + 1)
+        ],
+        "children": children,
+    }
 
 
 def outage_kind(e):
@@ -1632,6 +1786,20 @@ def thumbnail(name):
     return None
 
 
+def google_thumb(name):
+    """Thumbnail of an item that is only in Google (for the storage page)."""
+    account, _, key = name.partition("\n")
+    auth = dict(accounts()).get(account)
+    if not auth or not re.fullmatch(r"[\w-]+", key):
+        return None
+    target = THUMBS / "google" / f"{hashlib.sha1(name.encode()).hexdigest()}.webp"
+    if target.exists():
+        return target
+    from gpmc.api import Api
+
+    return media.save_bytes(Api(auth).get_thumbnail(key, width=media.THUMB_SIZE), target)
+
+
 PREVIEW_SIZE = 1600
 MEDIA_TYPES = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp",
@@ -1877,6 +2045,393 @@ def status_body():
     body = json.dumps(status_json()).encode()
     m.update(at=now, key=key, body=body)
     return body
+
+
+# ---------------------------------------------------------------- free up Google storage
+# Photos and videos that count against the Google storage quota (for example ones the phone's
+# Google Photos app backed up) are downloaded and checked against Google's own fingerprint. The
+# user then deletes them in Google Photos: GP Sync never deletes anything there. Once an item is
+# gone, it is uploaded again the way all GP Sync uploads go, which doesn't count, and checked.
+
+RECLAIM_DIR = DATA / "reclaim"
+GPMC_HOME = Path.home() / ".gpmc"  # where gpmc keeps its copy of each account's library list
+RECLAIM_KINDS = {1: "photo", 2: "video"}
+reclaim_wake = threading.Event()
+reclaim_state = {"refreshing": "", "error": "", "current": None}
+
+
+def reclaim_blocked(account):
+    """True after Google counted one of our re-uploads: then nothing more is moved."""
+    return bool(q("SELECT 1 FROM reclaim WHERE account=? AND state='counts' LIMIT 1", (account,)))
+
+
+def _b64_hash(digest):
+    """Google's dedup key: the file's SHA-1 in URL-safe base64."""
+    return base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+
+def _library_db(account):
+    return GPMC_HOME / account / "storage.db"
+
+
+def _library_rows(account, sql, args=()):
+    path = _library_db(account)
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+    try:
+        return conn.execute(sql, args).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def _seconds(ts):
+    ts = int(ts or 0)
+    return ts / 1000 if ts > 10**11 else ts  # Google sends milliseconds
+
+
+def storage_report(account, limit=500):
+    """What counts against Google storage in an account, biggest first, with progress."""
+    refreshed = meta_get(f"library_refreshed:{account}")
+    out = {
+        "account": account,
+        "refreshed": float(refreshed) if refreshed else None,
+        "refreshing": reclaim_state["refreshing"] == account,
+        "error": reclaim_state["error"],
+        "blocked": reclaim_blocked(account),
+        "current": reclaim_state["current"],
+        "free_space": shutil.disk_usage(DATA).free if DATA.exists() else 0,
+    }
+    rows = _library_rows(
+        account,
+        """SELECT media_key, dedup_key, file_name, type, size_bytes, quota_charged_bytes, utc_timestamp
+           FROM remote_media WHERE origin = 'self' AND COALESCE(trash_timestamp, 0) = 0
+           AND COALESCE(is_locked, 0) = 0""",
+    )
+    jobs = {
+        r[0]: r
+        for r in q(
+            """SELECT media_key, dedup_key, name, kind, size, quota, taken, state, error, new_key, updated
+               FROM reclaim WHERE account=?""",
+            (account,),
+        )
+    }
+    ours = {
+        _b64_hash(bytes.fromhex(h)) for (h,) in q("SELECT sha1 FROM files WHERE sha1 != '' AND account=?", (account,))
+    }
+    items, counted, counted_bytes, total, ours_counted, ours_seen = [], 0, 0, 0, 0, 0
+    for key, dedup, name, kind, size, quota, taken in rows or []:
+        total += 1
+        if dedup in ours:
+            ours_seen += 1
+            ours_counted += bool(quota)
+        if quota:
+            counted += 1
+            counted_bytes += quota
+            items.append((key, dedup, name, RECLAIM_KINDS.get(kind, "photo"), size, quota, _seconds(taken)))
+    listed = {i[0] for i in items}
+    for key, dedup, name, kind, size, quota, taken, *_ in jobs.values():
+        if key not in listed:  # deleted in Google already, or done
+            items.append((key, dedup, name, kind, size, quota, taken))
+    finished = {k for k, j in jobs.items() if j[7] in ("done", "counted")}
+    items.sort(key=lambda i: (i[0] in finished, -(i[5] or 0), i[2] or ""))  # to do first, biggest first
+
+    def job(key):
+        j = jobs.get(key)
+        return {"state": j[7], "error": j[8] or "", "new_key": j[9] or "", "updated": j[10]} if j else {"state": ""}
+
+    done = q("SELECT COUNT(*), SUM(quota) FROM reclaim WHERE account=? AND state='done'", (account,))[0]
+    return {
+        **out,
+        "listed": rows is not None,
+        "total": total,
+        "counted": counted,
+        "counted_bytes": counted_bytes,
+        "ours": {"seen": ours_seen, "counted": ours_counted},
+        "freed": {"count": done[0], "bytes": done[1] or 0},
+        "items": [
+            {
+                "key": key,
+                "name": name,
+                "kind": kind,
+                "size": size,
+                "quota": quota,
+                "taken": taken,
+                "google_url": f"https://photos.google.com/photo/{key}",
+                **job(key),
+            }
+            for key, _dedup, name, kind, size, quota, taken in items[:limit]
+        ],
+    }
+
+
+def reclaim_queue(account, keys):
+    """Ask for items to be downloaded (biggest first, one at a time)."""
+    wanted = set(keys)
+    rows = _library_rows(
+        account,
+        """SELECT media_key, dedup_key, file_name, type, size_bytes, quota_charged_bytes, utc_timestamp,
+                  is_favorite, is_archived, caption FROM remote_media WHERE quota_charged_bytes > 0""",
+    )
+    n = 0
+    for key, dedup, name, kind, size, quota, taken, fav, arch, cap in rows or []:
+        if key not in wanted:
+            continue
+        q(
+            """INSERT INTO reclaim (account, media_key, dedup_key, name, kind, size, quota, taken, favorite,
+                                    archived, caption, state, updated)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,'queued',?)
+               ON CONFLICT(account, media_key) DO UPDATE SET state='queued', error=''
+               WHERE state IN ('failed', 'cancelled')""",
+            (account, key, dedup, name, RECLAIM_KINDS.get(kind, "photo"), size, quota, _seconds(taken),
+             int(bool(fav)), int(bool(arch)), cap or "", time.time()),
+        )  # fmt: skip
+        n += 1
+    reclaim_wake.set()
+    return {"queued": n}
+
+
+def reclaim_cancel(account, keys):
+    """Forget items that are waiting (their downloaded copy is removed). Never touches Google."""
+    n = 0
+    for key in keys:
+        rows = q(
+            """SELECT local FROM reclaim WHERE account=? AND media_key=?
+               AND state IN ('queued', 'downloaded', 'in_google', 'failed')""",
+            (account, key),
+        )
+        if not rows:
+            continue
+        if rows[0][0]:
+            shutil.rmtree(Path(rows[0][0]).parent, ignore_errors=True)
+        q("DELETE FROM reclaim WHERE account=? AND media_key=?", (account, key))
+        n += 1
+    return {"cancelled": n}
+
+
+def _reclaim_client(account):
+    from gpmc import Client
+
+    auth = dict(accounts()).get(account)
+    if not auth:
+        raise RuntimeError(f"{account} is not connected")
+    return Client(auth_data=auth, log_level="WARNING")
+
+
+def _download_urls(response):
+    """Download links in a PhotosPrepareDownload answer, Google's original first."""
+    found = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, (*path, str(k)))
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, path)
+        elif isinstance(node, (str, bytes)):
+            text = node.decode(errors="ignore") if isinstance(node, bytes) else node
+            host = urllib.parse.urlparse(text).hostname or ""
+            if text.startswith("https://") and (
+                host.endswith(".googleusercontent.com") or host.endswith(".google.com")
+            ):
+                found.append((0 if path[-4:] == ("1", "5", "2", "6") else 1, text))
+
+    walk(response, ())
+    return [u for _, u in sorted(found, key=lambda x: x[0])][:3]
+
+
+def _download(client, account, key, dedup, name, size, taken):
+    """Download one item and prove it is Google's original (same SHA-1). Returns the path."""
+    import requests
+
+    if shutil.disk_usage(DATA).free < (size or 0) * 1.1 + 512 * 1024**2:
+        raise RuntimeError("Not enough free disk space for this file")
+    folder = RECLAIM_DIR / account / key
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / (clean_name(name) or f"{key}.bin")
+    tmp = target.with_suffix(target.suffix + ".part")
+    headers = {"Authorization": f"Bearer {client.api.bearer_token}", "User-Agent": client.api.user_agent}
+    urls = _download_urls(client.api.get_download_urls(key))
+    if not urls:
+        raise RuntimeError("Google gave no download link")
+    for url in urls:
+        digest = hashlib.sha1()
+        done = 0
+        with requests.get(url, headers=headers, stream=True, timeout=60) as r, open(tmp, "wb") as f:
+            r.raise_for_status()
+            for block in r.iter_content(1024 * 1024):
+                f.write(block)
+                digest.update(block)
+                done += len(block)
+                reclaim_state["current"] = {"key": key, "step": "downloading", "done": done, "total": size}
+        if _b64_hash(digest.digest()) == dedup:
+            tmp.replace(target)
+            if taken:
+                os.utime(target, (taken, taken))  # the upload uses the file time as its date
+            return target
+    tmp.unlink(missing_ok=True)
+    raise RuntimeError("The download is not exactly Google's original, so it was not used")
+
+
+def _set_reclaim(account, key, state_, error="", **cols):
+    sets = ", ".join(f"{c}=?" for c in cols)
+    q(
+        f"UPDATE reclaim SET state=?, error=?, updated=?{', ' + sets if sets else ''} WHERE account=? AND media_key=?",
+        (state_, error, time.time(), *cols.values(), account, key),
+    )
+    notify_change()
+
+
+def reclaim_step(make_client=None):
+    """Do the next piece of work. Returns True if there was something to do."""
+    make_client = make_client or _reclaim_client
+    rows = q(
+        """SELECT account, media_key, dedup_key, name, size, taken, state, local, favorite, archived, caption,
+                  new_key, checks FROM reclaim WHERE state IN ('queued', 'downloaded', 'in_google', 'checking')
+           ORDER BY state = 'queued', quota DESC"""
+    )
+    if not rows:
+        return False
+    did = False
+    clients = {}
+
+    def client_for(account):
+        if account not in clients:
+            clients[account] = make_client(account)
+        return clients[account]
+
+    for account, key, dedup, name, size, taken, st_, local, fav, arch, cap, new_key, checks in rows:
+        try:
+            if st_ == "queued":
+                reclaim_state["current"] = {"key": key, "step": "downloading", "done": 0, "total": size}
+                path = _download(client_for(account), account, key, dedup, name, size, taken)
+                _set_reclaim(account, key, "downloaded", local=str(path))
+                log(f"Downloaded {name} from Google ({fmt_bytes(size)}): delete it in Google Photos to free it", "info")
+                return True  # one download per step: the next one waits for the next call
+            if st_ in ("downloaded", "in_google"):
+                if reclaim_blocked(account):
+                    continue
+                client = client_for(account)
+                if client.api.find_remote_media_by_hash(base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))):
+                    continue  # the user hasn't deleted it yet (or it's still in Google's Trash)
+                did = True
+                reclaim_state["current"] = {"key": key, "step": "uploading", "done": 0, "total": size}
+                result = _reupload(client, Path(local), dedup, size, key)
+                if result is None:
+                    _set_reclaim(
+                        account, key, "in_google", "Still in Google Photos: also delete it from Google's Trash"
+                    )
+                    continue
+                _restore_details(client, dedup, fav, arch, cap)
+                _set_reclaim(account, key, "checking", new_key=result, checks=0)
+            elif st_ == "checking":
+                did = True
+                client = client_for(account)
+                client.update_cache(show_progress=False)
+                meta_set(f"library_refreshed:{account}", str(time.time()))
+                found = _library_rows(
+                    account, "SELECT quota_charged_bytes FROM remote_media WHERE media_key=?", (new_key,)
+                )
+                if not found:
+                    if (checks or 0) >= 10:
+                        _set_reclaim(account, key, "failed", "Uploaded, but Google hasn't listed it yet. Check later")
+                    else:
+                        _set_reclaim(account, key, "checking", checks=(checks or 0) + 1)
+                    continue
+                if found[0][0]:
+                    _set_reclaim(account, key, "counts", "Google counted this upload too, so nothing was freed")
+                    log(f"Free upload didn't work for {account}: stopped freeing storage", "error")
+                    alert("Freeing storage stopped", f"Google counted the new upload of {name} against storage.")
+                    continue
+                shutil.rmtree(Path(local).parent, ignore_errors=True)
+                _set_reclaim(account, key, "done", local="")
+                log(f"Freed {fmt_bytes(size)} of Google storage: {name}", "uploaded")
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"[:300]
+            print(f"Free storage: {name}: {msg}", file=sys.stderr, flush=True)
+            if st_ == "queued":
+                _set_reclaim(account, key, "failed", msg)
+                return True
+            _set_reclaim(account, key, st_, msg)  # tried again in 2 minutes
+        finally:
+            reclaim_state["current"] = None
+    return did
+
+
+def _reupload(client, path, dedup, size, key):
+    """Upload the downloaded original the free way. Returns the new media key, or None if Google
+    still has the old one (then nothing is uploaded)."""
+    from rich.progress import Progress
+
+    phases = []
+
+    def progress(ev):
+        phases.append(ev.get("phase"))
+        if ev.get("phase") == "uploading":
+            reclaim_state["current"] = {
+                "key": key,
+                "step": "uploading",
+                "done": ev.get("bytes_completed") or 0,
+                "total": size,
+            }
+
+    digest = base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))
+    with Progress(disable=True) as bar:
+        result = client._upload_file(
+            path, digest, bar, force_upload=False, use_quota=False, saver=False, progress_callback=progress
+        )
+    if "skipped" in phases:
+        return None
+    return next(iter(result.values()), "") or None
+
+
+def _restore_details(client, dedup, favorite, archived, caption):
+    """Favourite, archived and caption come back (they belong to the file, not to an album)."""
+    for step in (
+        lambda: favorite and client.api.set_favorite(dedup, True),
+        lambda: archived and client.api.set_archived([dedup], True),
+        lambda: caption and client.api.set_item_caption(dedup_key=dedup, caption=caption),
+    ):
+        try:
+            step()
+        except Exception as e:
+            print(f"Free storage: couldn't restore details: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+
+def refresh_library(account, make_client=None):
+    """Read the account's library list from Google (the first time can take a few minutes)."""
+    reclaim_state.update(refreshing=account, error="")
+    notify_change()
+    try:
+        (make_client or _reclaim_client)(account).update_cache(show_progress=False)
+        meta_set(f"library_refreshed:{account}", str(time.time()))
+    except Exception as e:
+        reclaim_state["error"] = f"{type(e).__name__}: {e}"[:300]
+    finally:
+        reclaim_state["refreshing"] = ""
+        notify_change()
+
+
+_refresh_requests = collections.deque()
+
+
+def reclaim_worker():
+    """One item at a time. Items waiting for the user to delete them are checked every 2 minutes."""
+    with contextlib.suppress(Exception):  # reset work cut short by a restart
+        q("UPDATE reclaim SET state='queued' WHERE state='downloading'")
+    while True:
+        try:
+            while _refresh_requests:
+                refresh_library(_refresh_requests.popleft())
+            busy = reclaim_step()
+        except Exception as e:
+            print(f"Free storage: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            busy = False
+        reclaim_wake.wait(1 if busy else 120)
+        reclaim_wake.clear()
 
 
 # ---------------------------------------------------------------- uploads from phones
@@ -2396,6 +2951,21 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/history":
             days, tz = arg("days", 365, 1, 3660), arg("tz", 0, -840, 840)
             self.cached(f"history:{days}:{tz}", 60, lambda: history(days, tz))
+        elif path == "/api/folders":
+            folder = clean_folder(arg("path", ""))
+            if folder is None:
+                self.json({"error": "bad folder"}, 400)
+                return
+            group = "devices" if arg("group", "folders") == "devices" else "folders"
+            days, tz = arg("days", 30, 1, 366), arg("tz", 0, -840, 840)
+            key = f"folders:{group}:{folder}:{days}:{tz}:{state['last_scan']}"
+            self.cached(key, 30, lambda: folder_report(folder, group, days, tz))
+        elif path == "/api/storage":
+            account = arg("account", "") or (accounts()[0][0] if accounts() else "")
+            self.json(storage_report(account) if account else {"account": "", "listed": False, "items": []})
+        elif path == "/api/storage/thumb":
+            account, key = arg("account", ""), arg("key", "")
+            self.image("gthumb", f"{account}\n{key}", google_thumb)
         elif path == "/api/totals":
             self.cached("totals", 60, totals)
         elif path == "/api/settings":
@@ -2556,6 +3126,30 @@ class Handler(BaseHTTPRequestHandler):
                     state["phase"] = "paused"
             notify_change()
             self.json({})
+        elif path.startswith("/api/storage/"):
+            try:
+                req = json.loads(body or "{}")
+                account, keys = str(req.get("account", "")), [str(k) for k in req.get("keys") or []][:1000]
+            except (ValueError, AttributeError):
+                self.json({"error": "bad request"}, 400)
+                return
+            if account not in dict(accounts()):
+                self.json({"error": "unknown account"}, 400)
+            elif path == "/api/storage/refresh":
+                _refresh_requests.append(account)
+                reclaim_wake.set()
+                self.json({"ok": True})
+            elif path == "/api/storage/download":
+                self.json(reclaim_queue(account, keys))
+            elif path == "/api/storage/cancel":
+                self.json(reclaim_cancel(account, keys))
+            elif path == "/api/storage/check":
+                if req.get("unblock"):  # the user read why it stopped and wants to go on
+                    q("UPDATE reclaim SET state='counted' WHERE account=? AND state='counts'", (account,))
+                reclaim_wake.set()
+                self.json({"ok": True})
+            else:
+                self.send(404, "{}")
         elif path == "/api/retry":
             one = (json.loads(body or "{}") if body.strip().startswith("{") else {}).get("path")
             if one:
@@ -2583,6 +3177,9 @@ def main():
     threading.Thread(target=hasher, daemon=True).start()
     threading.Thread(target=latency_sampler, daemon=True).start()
     threading.Thread(target=minute_sampler, daemon=True).start()
+    with contextlib.suppress(Exception):  # gpmc sets a signal handler on import: main thread only
+        import gpmc.client  # noqa: F401
+    threading.Thread(target=reclaim_worker, daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     worker()  # gpmc installs signal handlers, so it must run on the main thread

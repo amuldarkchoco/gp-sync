@@ -87,6 +87,13 @@ Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
 - **Albums:** put new uploads in Google Photos albums named after their folder.
 - **Files:** search and filter everything that was backed up, with thumbnails (iPhone HEIC too) and
   a link to each item in Google Photos. A duplicates tab lists identical files.
+- **Folders and devices:** photos, videos, size and backup progress for any folder, or per phone
+  (the folders phone backup apps make), with a chart of what was added each day.
+- **Free storage:** lists what counts against your Google storage, biggest first. One at a time,
+  GP Sync downloads an item and checks it is Google's original, you delete it in Google Photos,
+  and GP Sync uploads it again the free way and checks it no longer counts. GP Sync never
+  deletes anything in Google. Albums and shared links are not kept. This relies on the same
+  free upload as all GP Sync uploads, which Google could stop honouring.
 - **History:** a contribution graph (like GitHub's) of photos, videos, data uploaded or network
   traffic per day, with day details, streaks and 30-day charts.
 - **Alerts:** ntfy or Telegram messages when Google rejects a login, a file fails 5 times or a
@@ -123,6 +130,8 @@ never stop backups; if Turso can't be used, statistics fall back to SQLite autom
 | `GET /api/history?days=365&tz=330` | Per-day totals; `tz` is minutes east of UTC (India = 330) |
 | `GET /api/totals` | All-time totals and fastest upload |
 | `GET /api/files?q=&status=all&folder=&sort=new&limit=60&offset=0` | Search backed-up files |
+| `GET /api/folders?group=folders&path=Photos&days=30&tz=330` | Counts and files added per day for a folder, or `group=devices` |
+| `GET /api/storage?account=` | What counts against Google storage, biggest first, and progress of moving it |
 | `GET /api/duplicates` | Groups of identical files |
 | `GET /api/health` | Version, storage, logins |
 | `GET /api/activity?kind=all&q=&before=&limit=100` | Saved activity (all, uploaded, exists, failed, system) |

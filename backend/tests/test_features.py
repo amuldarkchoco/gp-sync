@@ -2,6 +2,8 @@
 thumbnails, file search, duplicates, health and the installable app."""
 
 import json
+import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -462,3 +464,59 @@ def test_latency_measurement():
     assert sync.measure_latency(("127.0.0.1", srv.getsockname()[1])) >= 0
     srv.close()
     assert sync.measure_latency(("127.0.0.1", 9), timeout=1) is None  # nothing listening
+
+
+# --- folders and devices
+
+
+def test_folder_report_counts_any_folder(media):
+    (media / "Photos" / "trip" / "day2").mkdir(exist_ok=True)
+    (media / "Photos" / "trip" / "day2" / "d.mov").write_bytes(b"v" * 50)
+    sync.scan()
+    sync.state["last_scan"] = time.time()
+    top = sync.folder_report("", "folders", 7)
+    names = {c["name"]: c for c in top["children"]}
+    assert names["Photos"]["photos"] == 2 and names["Photos"]["videos"] == 1 and names["Photos"]["has_sub"]
+    assert names["Videos"]["videos"] == 1
+    assert top["total"]["files"] == 4 and top["total"]["new_day"] == 4
+
+    photos = sync.folder_report("Photos", "folders", 7)
+    kids = {c["name"]: c for c in photos["children"]}
+    assert kids["trip"]["files"] == 2 and kids["trip"]["has_sub"]
+    assert kids[""]["files"] == 1  # b.HEIC sits in Photos itself
+    assert photos["daily"][-1] == {"day": photos["today"], "photos": 2, "videos": 1}
+    assert sum(kids["trip"]["series"]) == 2
+
+    deep = sync.folder_report("Photos/trip/day2", "folders", 7)
+    assert deep["total"]["videos"] == 1 and deep["children"][0]["name"] == ""
+
+
+def test_folder_report_groups_devices(media):
+    for dev in ("Pixel", "Pixel (2)"):
+        (media / "Photos" / dev / "0a").mkdir(parents=True, exist_ok=True)
+        (media / "Photos" / dev / "0a" / f"{dev}.jpg").write_bytes(b"p" * 10)
+    (media / "Documents" / "Phone").mkdir(parents=True, exist_ok=True)
+    (media / "Documents" / "Phone" / "x.jpg").write_bytes(b"d" * 10)  # not a backed-up folder
+    sync.scan()
+    r = sync.folder_report("", "devices", 30)
+    devices = {c["name"]: c for c in r["children"]}
+    assert devices["Pixel"]["files"] == 2
+    assert devices["Pixel"]["folders"] == ["Photos/Pixel", "Photos/Pixel (2)"]
+    assert "Phone" not in devices
+
+
+def test_folder_report_dates_files_by_arrival(media):
+    old = time.time() - 40 * 86400
+    os.utime(media / "Videos" / "c.mp4", (old, old))  # copied with its original date kept
+    sync.scan()
+    r = sync.folder_report("Videos", "folders", 30)
+    assert r["total"]["new"] == 1  # it still arrived today
+
+
+def test_folders_api_rejects_unsafe_paths(media, server):
+    sync.scan()
+    with urllib.request.urlopen(f"{server}/api/folders?path=Photos") as r:
+        assert json.load(r)["total"]["files"] == 2
+    with pytest.raises(urllib.error.HTTPError) as bad:
+        urllib.request.urlopen(f"{server}/api/folders?path=../etc")
+    assert bad.value.code == 400
