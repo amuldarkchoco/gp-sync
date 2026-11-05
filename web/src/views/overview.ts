@@ -11,6 +11,8 @@ let chart: NetChart | null = null;
 let hist: History | null = null;
 let ins: Insights | null = null;
 let slowTimer = 0;
+let slowSynced = -1; // uploaded count the heat map and streak were last loaded for
+let slowAt = 0;
 let last: Status | null = null;
 
 // ---- where the photos are: pie charts per device (or folder) and photos vs videos
@@ -129,7 +131,8 @@ function renderShare(): void {
 }
 
 function streak(h: History): number {
-  const byDay = new Map(h.data.map((d) => [d.day, d.photos + d.videos + d.existing]));
+  // Same count as the heat map, so the streak and the coloured days agree.
+  const byDay = new Map(h.data.map((d) => [d.day, d.photos + d.videos]));
   let n = 0;
   const d = new Date(h.today + "T00:00:00");
   if (!byDay.get(h.today)) d.setDate(d.getDate() - 1); // today may still be coming
@@ -142,6 +145,7 @@ function streak(h: History): number {
 }
 
 async function loadSlow(): Promise<void> {
+  slowAt = Date.now();
   [hist, ins] = await Promise.all([
     get<History>(`history?days=371&tz=${tz}`),
     get<Insights>(`insights?tz=${tz}`),
@@ -171,7 +175,7 @@ function renderSlow(): void {
   const k = $("#k-streak");
   html($("[data-v]", k), `${st} day${st === 1 ? "" : "s"}`);
   const active = hist.data.filter((d) => d.photos + d.videos > 0).length;
-  html($("[data-s]", k), `${active} active days this year`);
+  html($("[data-s]", k), `${num(active)} active day${active === 1 ? "" : "s"} this year`);
   html(
     $("[data-c]", k),
     `<div class="flex gap-1">${last14
@@ -483,11 +487,17 @@ const overview: View = {
       $$("button", $("#ov-range")).forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
       chart?.setRange(b.dataset.range as Range, last);
     });
+    slowSynced = -1;
     void loadSlow();
     slowTimer = window.setInterval(loadSlow, 60_000);
   },
   update(s) {
     last = s;
+    // New uploads: refresh the heat map and streak now instead of waiting for the minute timer.
+    if (s.library.synced_files !== slowSynced && Date.now() - slowAt > 10_000) {
+      if (slowSynced >= 0) void loadSlow();
+      slowSynced = s.library.synced_files;
+    }
     if (Date.now() - shareAt > 60_000) void loadShare(); // counts change slowly: once a minute
     else if (!kindsDrawn) renderShare();
     const lib = s.library;

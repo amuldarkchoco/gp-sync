@@ -21,6 +21,8 @@ import library from "./views/library";
 import network from "./views/network";
 import overview from "./views/overview";
 import settings from "./views/settings";
+import dates from "./views/dates";
+import { askUndated } from "./lib/undated";
 import storage from "./views/storage";
 import upload from "./views/upload";
 
@@ -39,6 +41,7 @@ const ROUTES: Route[] = [
   { id: "library", title: "Library", ic: "library", view: library, group: "Backup" },
   { id: "storage", title: "Free storage", ic: "cloud", view: storage, group: "Backup" },
   { id: "copy", title: "Copy accounts", ic: "users", view: copyView, group: "Backup" },
+  { id: "dates", title: "Fix dates", ic: "clock", view: dates, group: "Backup" },
   { id: "folders", title: "Folders", ic: "folder", view: folders, group: "Insights" },
   { id: "history", title: "History", ic: "calendar", view: historyView, group: "Insights" },
   { id: "insights", title: "Insights", ic: "chart", view: insights, group: "Insights" },
@@ -284,6 +287,7 @@ function updateShell(s: Status): void {
       "",
     ],
     health: warnHealth ? ["!", "bad"] : ["", ""],
+    dates: s.dates?.waiting ? [String(s.dates.waiting), "info"] : ["", ""],
     settings: s.accounts.length ? ["", ""] : ["1", "info"],
     overview: s.phase === "uploading" && s.total ? [`${s.done}/${s.total}`, "info"] : ["", ""],
   };
@@ -472,6 +476,7 @@ function boot(): void {
     offline.classList.toggle("hidden", document.documentElement.dataset.offline !== "1"),
   ).observe(document.documentElement, { attributes: true, attributeFilter: ["data-offline"] });
   onStatus(updateShell);
+  onStatus(askUndated);
   onMode((live) => $("#live").classList.toggle("hidden", !live));
   route();
   startPolling();

@@ -79,6 +79,10 @@ export interface Status {
   max_accounts?: number;
   copies?: Record<string, { done: number; failed: number }>;
   copies_pending?: number;
+  /** Files with no date of their own, and fixes waiting for the user to delete the item in Google. */
+  dates?: { undated: number; waiting: number };
+  /** The user has seen the "album for files without a date" choice. */
+  undated_asked?: boolean;
   current: Current | null;
   library: Library;
   folders: Record<string, Folder>;
@@ -250,6 +254,40 @@ export interface Settings {
   hash_existing: boolean;
   /** Folders whose files upload first, in this order ("Photos/iPhone"). */
   priority?: string[];
+  /** Photos and videos with no date of their own go into this album. */
+  undated: { album: boolean; name: string; asked: boolean };
+}
+export interface DateItem {
+  name: string;
+  kind: "photo" | "video";
+  size: number;
+  /** Date Google Photos shows (unix seconds), null when unknown. */
+  google: number | null;
+  /** Date it should have. */
+  best: number;
+  /** manual = picked by the user, copy = earliest identical copy, file = the file's own time,
+   * google = Google already has an earlier (better) date. */
+  source: "manual" | "copy" | "file" | "google";
+  manual: number | null;
+  wrong: boolean;
+  fix: "" | "waiting" | "in_google" | "done" | "failed";
+  error: string;
+  google_url: string;
+}
+export interface DatesReport {
+  account: string;
+  accounts: string[];
+  refreshed: number | null;
+  refreshing: boolean;
+  items: DateItem[];
+  undated: number;
+  wrong: number;
+  waiting: number;
+  fixed: number;
+  checked: number;
+  album: string;
+  current: { key: string; done: number; total: number } | null;
+  error: string;
 }
 export interface FileItem {
   name: string;
@@ -262,6 +300,8 @@ export interface FileItem {
   attempts: number;
   google_url: string;
   mtime?: number;
+  /** No capture date inside the file. */
+  undated?: boolean;
 }
 export interface FolderGroup {
   /** Subfolder or device name; "" = files sitting in the folder itself. */

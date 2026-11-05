@@ -271,10 +271,14 @@ function sectionAlbums(): string {
         )
         .join("")}
       </div></section>
+    <section class="card">${cardHead("Photos and videos without a date", "calendar")}
+      <div class="card-b space-y-3">${toggleRow("set-undated", "Put them in their own album", "Snapchat saves, screenshots and chat pictures have no date inside, so Google Photos dates them by the upload. Keep them together in one album.", cfg?.undated?.album ?? true)}
+        ${field("Album name", `<input class="input" id="set-undated-name" maxlength="80" value="${esc(cfg?.undated?.name ?? "Date unknown")}">`, "Files already uploaded are added too. A new name starts a new album; the old one stays in Google Photos.")}
+        <a href="#/dates" class="btn">${icon("clock")}Fix dates</a></div></section>
     <section class="card">${cardHead("Duplicates", "copy")}
       <div class="card-b">${toggleRow("set-hash", "Check older uploads for duplicates", "Fingerprints files while the app is idle. See Library › Duplicates.", !!cfg?.hash_existing)}
       <a href="#/library/duplicates" class="btn mt-3">${icon("copy")}Open duplicates</a></div></section>
-    ${actions("Albums are created the first time and reused after that. Files uploaded earlier are not moved.", `<button class="btn primary" id="set-save-albums">${icon("ok")}Save</button>`)}
+    ${actions("Albums are created the first time and reused after that. Folder albums apply to new uploads only.", `<button class="btn primary" id="set-save-albums">${icon("ok")}Save</button>`)}
   </div>`;
 }
 
@@ -568,7 +572,11 @@ function wire(): void {
   on("set-save-albums", "click", () => {
     const albums =
       (document.querySelector('input[name="albums"]:checked') as HTMLInputElement | null)?.value ?? "off";
-    void save({ albums, hash_existing: checked("set-hash") });
+    void save({
+      albums,
+      hash_existing: checked("set-hash"),
+      undated: { album: checked("set-undated"), name: val("set-undated-name").trim(), asked: true },
+    });
   });
 
   // alerts

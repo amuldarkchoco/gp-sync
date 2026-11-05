@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.0
+
+- Uploads per day and the streak refresh as soon as new files upload (they waited up to
+  two minutes on Overview); the History page now refreshes too (it only loaded once)
+- The streak counts the same uploads as the heat map, and says "1 active day" (not "days")
+- Right dates for photos and videos with no date inside (Snapchat saves, screenshots, chat
+  pictures): Google Photos dates those by the upload, which used to be the time the file was copied
+  to the server. GP Sync now sends the best date it knows: one you pick, else the earliest identical
+  copy on the server
+- Fix dates page: lists uploaded files without a date, the date Google Photos shows and the date
+  they should have (an earlier date already in Google is kept). Set date picks your own; Fix waits
+  for you to delete the item in Google Photos (GP Sync never deletes there), then uploads it again
+  with the right date and brings back favourite, archive, caption and GP Sync's albums
+- Album for files without a date ("Date unknown" by default, on): asked once after connecting a
+  Google account (and once after this update); change it in Settings › Albums & duplicates.
+  Library has a "No date" filter and badge
+- Date facts are kept in the Turso database
+
 ## 1.1.5
 
 - Upload first: pick folders or devices whose photos go to Google before the rest (Upload first

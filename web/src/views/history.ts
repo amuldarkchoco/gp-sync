@@ -9,6 +9,20 @@ import type { View } from "./view";
 let hist: History | null = null;
 let metric: "files" | "data" = "files";
 let span = 30;
+let timer = 0;
+let synced = -1; // uploaded count the page was last loaded for
+let loadedAt = 0;
+
+async function load(): Promise<void> {
+  loadedAt = Date.now();
+  const [h, t] = await Promise.all([get<History>(`history?days=371&tz=${tz}`), get<Totals>("totals")]);
+  if (!document.getElementById("h-year")) return; // left the page meanwhile
+  hist = h;
+  renderTotals(t);
+  renderYear();
+  renderDaily();
+  renderMonths();
+}
 
 function dayKey(d: Date): string {
   return d.toLocaleDateString("sv");
@@ -166,13 +180,19 @@ const historyView: View = {
       span = Number(b.dataset.d);
       renderDaily();
     });
-    void Promise.all([get<History>(`history?days=371&tz=${tz}`), get<Totals>("totals")]).then(([h, t]) => {
-      hist = h;
-      renderTotals(t);
-      renderYear();
-      renderDaily();
-      renderMonths();
-    });
+    synced = -1;
+    void load();
+    timer = window.setInterval(load, 60_000); // also rolls over to a new day
+  },
+  update(s) {
+    // New uploads: show them now instead of waiting for the minute timer.
+    if (s.library.synced_files !== synced && Date.now() - loadedAt > 10_000) {
+      if (synced >= 0) void load();
+      synced = s.library.synced_files;
+    }
+  },
+  unmount() {
+    clearInterval(timer);
   },
 };
 

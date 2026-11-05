@@ -56,7 +56,7 @@ function tileHtml(f: FileItem): string {
   return `<figure class="card media-tile group cursor-pointer overflow-hidden" ${openAttrs(f.name, f.status === "failed")}>
     <div class="shimmer relative aspect-square overflow-hidden">${thumb(f.name, "zoom-img fade-img size-full object-cover", f.mtime)}
       <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"></div>${link}
-      <div class="on-media absolute bottom-2 left-2 flex gap-1">${badge(label, tone)}${f.kind === "video" ? `<span class="badge">${icon("video")}</span>` : ""}</div></div>
+      <div class="on-media absolute bottom-2 left-2 flex gap-1">${badge(label, tone)}${f.undated ? badge("No date", "warn", "calendar", "No date inside the file: see Fix dates") : ""}${f.kind === "video" ? `<span class="badge">${icon("video")}</span>` : ""}</div></div>
     <figcaption class="p-2.5"><div class="truncate text-sm font-medium" title="${esc(f.name)}">${esc(fileName(f.name))}</div>
       <div class="truncate text-xs text-ink-3">${bytes(f.size)} · ${esc(folderOf(f.name))}</div>
       ${f.status === "failed" ? `<div class="mt-1 truncate text-xs text-bad" title="${esc(f.error)}">${esc(f.error)}</div>` : `<div class="text-xs text-ink-3">${ago(f.updated)}</div>`}
@@ -163,6 +163,7 @@ const library: View = {
           ["uploaded", "Uploaded"],
           ["exists", "In Google"],
           ["failed", "Failed"],
+          ["undated", "No date"],
         ]
           .map(([k, l]) => `<button data-s="${k}" aria-pressed="${k === st}">${l}</button>`)
           .join("")}</div>

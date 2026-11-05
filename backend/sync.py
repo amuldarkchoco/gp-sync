@@ -236,7 +236,11 @@ DEFAULT_SETTINGS = {
     },
     "hash_existing": True,  # duplicate finder: fingerprint already uploaded files when idle
     "priority": [],  # folders whose files upload first ("Photos/iPhone"), in this order
+    # Photos and videos with no date of their own (Snapchat saves, screenshots, chat pictures).
+    # "asked" turns true once the user has seen the choice (first setup, or once after updating).
+    "undated": {"album": True, "name": "Date unknown", "asked": False},
 }
+UNDATED_ALBUM = "Date unknown"
 SECRET_KEYS = ("ntfy_token", "telegram_token")
 
 
@@ -273,6 +277,9 @@ def update_settings(changes):
     if new["albums"] not in ("off", "top", "parent"):
         new["albums"] = "off"
     n["round_min"] = max(1, int(n["round_min"]))
+    u = new["undated"]
+    u["album"], u["asked"] = bool(u["album"]), bool(u["asked"])
+    u["name"] = " ".join(str(u["name"] or "").split())[:80] or UNDATED_ALBUM
     pr = new.get("priority") or []
     pr = [clean_folder(p) for p in (pr if isinstance(pr, list) else [])]
     new["priority"] = list(dict.fromkeys(p for p in pr if p))[:10]
@@ -474,6 +481,14 @@ STATS_SCHEMA = (
     # Per-minute averages of speed, CPU, memory and Google latency.
     """CREATE TABLE IF NOT EXISTS samples (minute INTEGER PRIMARY KEY, up REAL, down REAL, cpu REAL,
        mem INTEGER, latency REAL)""",
+    # Dates: does the file keep its own capture date (inside: 1 yes, 0 no, NULL can't tell), the date
+    # the user picked, the date sent to Google, and the "fix the date in Google" job for it.
+    """CREATE TABLE IF NOT EXISTS media_dates (path TEXT PRIMARY KEY, size INTEGER, mtime REAL, sha1 TEXT,
+       inside INTEGER, manual REAL, sent REAL, fix TEXT, error TEXT, favorite INTEGER, archived INTEGER,
+       caption TEXT, updated REAL)""",
+    # Files without a date already added to the album for them (per account and album name).
+    """CREATE TABLE IF NOT EXISTS undated_album (path TEXT NOT NULL, account TEXT NOT NULL, album TEXT,
+       PRIMARY KEY (path, account))""",
 )
 EVENT_DAYS = 90  # activity history kept this long
 LOG_DAYS = 30
@@ -1524,23 +1539,36 @@ def album_name(path, mode):
     return parts[-1]
 
 
-def flush_albums(client, account, queued):
-    """Add uploaded media to their albums, creating albums the first time."""
-    for name, keys in list(queued.items()):
-        if not keys:
-            continue
+albums_lock = threading.Lock()  # uploads and the date worker both add to albums
+
+
+def add_to_album(client, account, name, keys):
+    """Add media to an album, creating it the first time (or again if it was deleted in Google
+    Photos). Returns True if it worked."""
+    with albums_lock:
         row = q("SELECT album_key FROM albums WHERE account=? AND name=?", (account, name))
         try:
             try:
                 if not row:
                     raise LookupError
                 client.api.add_media_to_album(album_media_key=row[0][0], media_keys=keys)
-            except Exception:  # no album yet, or it was deleted in Google Photos: make a new one
+            except Exception as e:  # no album yet, or it was deleted in Google Photos: make a new one
+                if outage_kind(e):
+                    raise
                 key = client.api.create_album(album_name=name, media_keys=keys)
                 q("INSERT OR REPLACE INTO albums VALUES (?,?,?)", (account, name, key))
             log(f"Added {len(keys)} item(s) to album {name}", "album")
+            return True
         except Exception as e:
             log(f"Could not update album {name}: {type(e).__name__}: {e}", "error")
+            return False
+
+
+def flush_albums(client, account, queued):
+    """Add uploaded media to their albums, creating albums the first time."""
+    for name, keys in list(queued.items()):
+        if keys:
+            add_to_album(client, account, name, keys)
         queued[name] = []
 
 
@@ -1601,9 +1629,15 @@ def upload_all(client, todo, account="", st=None):
             try:
                 digest = media.sha1_file(path, on_progress=lambda n, cur=cur: cur.update(bytes_done=n))
                 cur.update(step="checking", bytes_done=0)
+                # No date inside the file: Google uses the one sent with the upload, so send the
+                # best one known (a date the user picked, or the earliest identical copy here).
+                when = None
+                if date_facts(path, size, mtime) == 0:
+                    remember_sha1(path, digest.hex())
+                    when = best_date(path, size, mtime, digest.hex())[0]
                 # Single-file upload raises on failure; the batch upload() only logs errors.
                 # gpmc is pinned in pyproject.toml, so this internal method stays stable.
-                with Progress(disable=True) as bar:
+                with Progress(disable=True) as bar, upload_date(client, when, mtime):
                     result = client._upload_file(
                         Path(path), digest, bar, force_upload=False, use_quota=False, saver=False,
                         progress_callback=progress,
@@ -1628,6 +1662,8 @@ def upload_all(client, todo, account="", st=None):
                     )
                     state["library"]["synced_files"] += 1
                     state["library"]["synced_bytes"] += size
+                    if when is not None and status == "uploaded":
+                        sq("UPDATE media_dates SET sent=? WHERE path=?", (int(when), path))
                 state["login_failed"].discard(account)
                 if (album := album_name(path, st["albums"])) is not None:
                     queued[album].append(key)
@@ -1861,6 +1897,7 @@ def hasher():
         try:
             if not busy:
                 busy = thumb_some() > 0
+                busy = dates_some() > 0 or busy
                 if get_settings()["hash_existing"]:
                     busy = hash_some() > 0 or busy
         except Exception as e:
@@ -1999,6 +2036,10 @@ def list_files(query="", status="all", folder="", sort="new", limit=60, offset=0
     if status in ("uploaded", "exists", "failed"):
         where.append("status=?")
         args.append(status)
+    undated = undated_paths()
+    if status == "undated":  # no date of their own
+        where.append("path IN (SELECT value FROM json_each(?))")
+        args.append(json.dumps(sorted(undated)))
     if folder:
         where.append("path LIKE ?")
         args.append(f"{MEDIA}/{folder}/%")
@@ -2024,6 +2065,7 @@ def list_files(query="", status="all", folder="", sort="new", limit=60, offset=0
             "attempts": att,
             "google_url": f"https://photos.google.com/photo/{key}" if key else "",
             "mtime": int(mt or 0),
+            "undated": p in undated,
         }
         for p, size, s, key, acc, t, err, att, mt in rows
     ]
@@ -2142,6 +2184,18 @@ def status_json():
             )
         },
         "copies_pending": state.get("copies_pending", 0),
+        # Files with no date of their own, and how many wait for the user to delete them in Google.
+        "dates": dict(
+            zip(
+                ("undated", "waiting"),
+                sq(
+                    """SELECT COALESCE(SUM(inside=0), 0), COALESCE(SUM(fix IN ('waiting','in_google')), 0)
+                       FROM media_dates"""
+                )[0],
+                strict=True,
+            )
+        ),
+        "undated_asked": st["undated"]["asked"],
         "counts": {
             "uploaded": counts.get("uploaded", 0),
             "exists": counts.get("exists", 0),
@@ -2587,8 +2641,398 @@ def reclaim_worker():
         except Exception as e:
             print(f"Free storage: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
             busy = False
+        for step in (datefix_step, undated_album_step):
+            try:
+                busy = step() or busy
+            except Exception as e:
+                print(f"Dates: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         reclaim_wake.wait(1 if busy else 120)
         reclaim_wake.clear()
+
+
+# ---------------------------------------------------------------- dates
+# Google Photos dates a photo or video by the date stored inside it. Files with none (Snapchat
+# saves, screenshots, chat pictures) get the date sent with the upload, which gpmc takes from the
+# file's modified time: often only when the file was copied here. So for those GP Sync sends a
+# better date (one the user picked, or the earliest identical copy), puts them in an album of
+# their own, and can fix ones already uploaded: the user deletes them in Google Photos, GP Sync
+# uploads them again with the right date. Facts about dates live in the Turso database.
+
+DATE_SLACK = 120  # seconds Google's date may be off before we call it wrong
+SAME_SIZE_HASHES = 50  # at most this many same-size files are fingerprinted to find copies of one file
+dates_state = {"current": None, "error": ""}
+_dates_checked = {}  # path -> when Google was last asked whether the user deleted it
+
+
+def date_facts(path, size, mtime):
+    """Whether a file keeps its own date: 1 yes, 0 no, None can't tell. Checked again when it changes."""
+    rows = sq("SELECT size, mtime, inside FROM media_dates WHERE path=?", (path,))
+    if rows and rows[0][0] == size and rows[0][1] == mtime:
+        return rows[0][2]
+    inside = media.has_date(path)
+    inside = None if inside is None else int(inside)
+    sq(
+        """INSERT INTO media_dates (path, size, mtime, inside, updated) VALUES (?,?,?,?,?)
+           ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime=excluded.mtime, inside=excluded.inside,
+           sha1=NULL, updated=excluded.updated""",
+        (path, size, mtime, inside, time.time()),
+    )
+    return inside
+
+
+def remember_sha1(path, sha1hex):
+    sq("UPDATE media_dates SET sha1=? WHERE path=?", (sha1hex, path))
+
+
+def dates_some(limit=300):
+    """While idle: check which files keep their own date, and fingerprint the ones without one
+    (and same-size files) so identical copies are known. Returns how much was done."""
+    known = {p: (s, m) for p, s, m in sq("SELECT path, size, mtime FROM media_dates")}
+    n = 0
+    for name, _video, size, _added, _backed, mtime in list(state.get("index") or []):
+        path = str(MEDIA / name)
+        if known.get(path) == (size, mtime):
+            continue
+        if n >= limit or state["phase"] not in IDLE_PHASES:
+            return n
+        date_facts(path, size, mtime)
+        n += 1
+    for path, size in sq("SELECT path, size FROM media_dates WHERE inside=0 AND sha1 IS NULL"):
+        if n >= limit or state["phase"] not in IDLE_PHASES:
+            break
+        try:
+            digest = media.sha1_file(path).hex()
+        except OSError:
+            continue
+        remember_sha1(path, digest)
+        same_content(path, size, digest)
+        n += 10
+    return n
+
+
+def same_content(path, size, sha1hex, fingerprint=True):
+    """Other files here with exactly the same content, as {path: modified time}."""
+    out = dict(q("SELECT path, mtime FROM files WHERE sha1=? AND path!=?", (sha1hex, path)))
+    for p, m in sq("SELECT path, mtime FROM media_dates WHERE sha1=? AND path!=?", (sha1hex, path)):
+        out.setdefault(p, m)
+    if not fingerprint:
+        return out
+    hashed = 0  # files not fingerprinted yet can only be copies if they have the same size
+    for name, _video, s, _added, _backed, m in list(state.get("index") or []):
+        p = str(MEDIA / name)
+        if s != size or p == path or p in out:
+            continue
+        if hashed >= SAME_SIZE_HASHES:
+            break
+        date_facts(p, s, m)
+        row = sq("SELECT sha1 FROM media_dates WHERE path=?", (p,))
+        digest = row[0][0] if row and row[0][0] else None
+        if digest is None:
+            try:
+                digest = media.sha1_file(p).hex()
+            except OSError:
+                continue
+            remember_sha1(p, digest)
+            hashed += 1
+        if digest == sha1hex:
+            out[p] = m
+    return out
+
+
+def best_date(path, size, mtime, sha1hex, fingerprint=True):
+    """(date to give Google, where it comes from) for a file with no date of its own: a date the
+    user picked ("manual"), the earliest identical copy here ("copy"), or the file's own time ("file")."""
+    if sha1hex:
+        picked = sq(
+            "SELECT MIN(manual) FROM media_dates WHERE (path=? OR sha1=?) AND manual IS NOT NULL", (path, sha1hex)
+        )
+    else:
+        picked = sq("SELECT manual FROM media_dates WHERE path=? AND manual IS NOT NULL", (path,))
+    if picked and picked[0][0]:
+        return float(picked[0][0]), "manual"
+    if sha1hex:
+        times = [m for m in same_content(path, size, sha1hex, fingerprint).values() if m]
+        if times and min(times) < mtime - 1:
+            return float(min(times)), "copy"
+    return float(mtime), "file"
+
+
+@contextlib.contextmanager
+def upload_date(client, when, mtime=None):
+    """Upload with `when` (unix seconds) as the date, instead of the file's modified time that gpmc
+    sends. Wraps gpmc's commit_upload for one upload; nothing changes when there is no date to send."""
+    if when is None or (mtime is not None and int(when) == int(mtime)):
+        yield
+        return
+    api = client.api
+    original = api.commit_upload
+
+    def commit(*args, **kwargs):
+        kwargs["upload_timestamp"] = int(when)
+        return original(*args, **kwargs)
+
+    api.commit_upload = commit
+    try:
+        yield
+    finally:
+        with contextlib.suppress(AttributeError):
+            del api.commit_upload  # back to gpmc's own method
+
+
+def _main_account(account):
+    accs = accounts()
+    return account or (accs[0][0] if accs else "")
+
+
+def undated_paths():
+    return {p for (p,) in sq("SELECT path FROM media_dates WHERE inside=0")}
+
+
+def undated_album_step(make_client=None):
+    """Put uploaded files without a date of their own in their album (Settings, Albums). Waits
+    until the user has seen the choice. Returns True if anything was added."""
+    cfg = get_settings()["undated"]
+    if not cfg["album"] or not cfg["asked"]:
+        return False
+    undated = undated_paths()
+    done = {(p, a) for p, a in sq("SELECT path, account FROM undated_album WHERE album=?", (cfg["name"],))}
+    if not undated or len({p for p, _ in done}) >= len(undated):
+        return False
+    rows = q(
+        """SELECT path, account, media_key FROM files WHERE status IN ('uploaded','exists') AND media_key != ''
+           AND path IN (SELECT value FROM json_each(?))
+           UNION ALL SELECT path, account, media_key FROM copies WHERE status IN ('uploaded','exists')
+           AND media_key != '' AND path IN (SELECT value FROM json_each(?))""",
+        (json.dumps(sorted(undated)),) * 2,
+    )
+    accs = dict(accounts())
+    todo = collections.defaultdict(list)
+    for path, account, key in rows:
+        account = _main_account(account)
+        if account in accs and key and (path, account) not in done:
+            todo[account].append((path, key))
+    did = False
+    for account, items in todo.items():
+        client = (make_client or _reclaim_client)(account)
+        for i in range(0, min(len(items), 1000), 100):
+            chunk = items[i : i + 100]
+            if not add_to_album(client, account, cfg["name"], [k for _, k in chunk]):
+                return did
+            for path, _ in chunk:
+                sq("INSERT OR REPLACE INTO undated_album VALUES (?,?,?)", (path, account, cfg["name"]))
+            did = True
+    return did
+
+
+def _google_dates(account, dedups):
+    """Google's date for each dedup key, from the account's library list (if it has been read)."""
+    out = {}
+    keys = list(dedups)
+    for i in range(0, len(keys), 500):
+        part = keys[i : i + 500]
+        rows = _library_rows(
+            account,
+            f"""SELECT dedup_key, utc_timestamp, is_favorite, is_archived, caption FROM remote_media
+                WHERE dedup_key IN ({",".join("?" * len(part))}) AND COALESCE(trash_timestamp, 0) = 0""",
+            part,
+        )
+        for dedup, ts, fav, arch, cap in rows or []:
+            out[dedup] = (_seconds(ts), fav, arch, cap)
+    return out
+
+
+def dates_report(account):
+    """Uploaded files with no date of their own: the date Google has, the date they should have,
+    and the progress of fixing them."""
+    account = account or _main_account("")
+    refreshed = float(meta_get(f"library_refreshed:{account}") or 0)
+    facts = {p: r for p, *r in sq("SELECT path, sha1, manual, sent, fix, error FROM media_dates WHERE inside=0")}
+    first = _main_account("")
+    rows = [
+        r
+        for r in q(
+            """SELECT path, size, mtime, status, media_key, account, updated, sha1 FROM files
+               WHERE status IN ('uploaded','exists') AND path IN (SELECT value FROM json_each(?))""",
+            (json.dumps(sorted(facts)),),
+        )
+        if (r[5] or first) == account
+    ]
+    google = _google_dates(
+        account, {_b64_hash(bytes.fromhex(r[7] or facts[r[0]][0])) for r in rows if r[7] or facts[r[0]][0]}
+    )
+    # Identical copies are one item in Google: list it once (the copy being fixed, else the uploaded one).
+    rows.sort(key=lambda r: (not facts[r[0]][3], r[3] != "uploaded", r[0]))
+    seen = set()
+    items = []
+    for path, size, mtime, status_, key, _acc, updated, sha1 in rows:
+        sha1 = sha1 or facts[path][0] or ""
+        if sha1 and sha1 in seen:
+            continue
+        seen.add(sha1)
+        _, manual, sent, fix, error = facts[path]
+        listed = google.get(_b64_hash(bytes.fromhex(sha1))) if sha1 else None
+        if listed and refreshed > (updated or 0):
+            in_google = listed[0]  # Google's own list, read after this file was uploaded
+        elif status_ == "uploaded":
+            in_google = float(sent or int(mtime))  # what GP Sync sent
+        else:
+            in_google = listed[0] if listed else None  # already there: someone else uploaded it
+        best, source = best_date(path, size, mtime, sha1, fingerprint=False)
+        if source != "manual" and in_google is not None and in_google < best - DATE_SLACK:
+            # A file is copied here after it was taken, never before: an earlier date in Google
+            # (from the phone's own backup, say) is closer to the truth than our file times.
+            best, source = in_google, "google"
+        items.append(
+            {
+                "name": rel(path),
+                "kind": "video" if ext(path) in VIDEO_EXTS else "photo",
+                "size": size,
+                "google": in_google,
+                "best": best,
+                "source": source,
+                "manual": manual,
+                "wrong": in_google is not None and abs(in_google - best) > DATE_SLACK,
+                "fix": fix or "",
+                "error": error or "",
+                "google_url": f"https://photos.google.com/photo/{key}" if key else "",
+            }
+        )
+    order = {"waiting": 0, "in_google": 0, "failed": 1}
+    items.sort(key=lambda i: (order.get(i["fix"], 2), not i["wrong"], -(i["best"] or 0)))
+    cfg = get_settings()["undated"]
+    return {
+        "account": account,
+        "accounts": [a for a, _ in accounts()],
+        "refreshed": refreshed or None,
+        "refreshing": reclaim_state["refreshing"] == account,
+        "items": items,
+        "undated": len(items),
+        "wrong": sum(i["wrong"] for i in items),
+        "waiting": sum(i["fix"] in ("waiting", "in_google") for i in items),
+        "fixed": sum(i["fix"] == "done" for i in items),
+        "checked": sq("SELECT COUNT(*) FROM media_dates")[0][0],
+        "album": cfg["name"] if cfg["album"] else "",
+        "current": dates_state["current"],
+        "error": dates_state["error"],
+    }
+
+
+def _date_target(name):
+    """The files row for a dashboard file name, if it is an uploaded file with no date of its own."""
+    path = str(MEDIA / name)
+    if not clean_folder(name) or not q("SELECT 1 FROM files WHERE path=? AND status IN ('uploaded','exists')", (path,)):
+        return None
+    return path if sq("SELECT 1 FROM media_dates WHERE path=? AND inside=0", (path,)) else None
+
+
+def dates_set(name, when):
+    """Use the date the user picked (unix seconds), or None to go back to the automatic one."""
+    path = _date_target(name)
+    if not path:
+        raise ValueError("Only uploaded files without a date of their own can get one")
+    if when is not None:
+        when = float(when)
+        if not 0 < when < time.time() + 86400:
+            raise ValueError("Pick a date in the past")
+    sq("UPDATE media_dates SET manual=? WHERE path=?", (when, path))
+    return {"ok": True}
+
+
+def dates_fix(names):
+    """Start fixing these files' dates: they wait for the user to delete them in Google Photos."""
+    n = 0
+    for name in names:
+        path = _date_target(name)
+        if not path:
+            continue
+        sha1, account = q("SELECT sha1, account FROM files WHERE path=?", (path,))[0]
+        sha1 = sha1 or (sq("SELECT sha1 FROM media_dates WHERE path=?", (path,)) or [[None]])[0][0]
+        if not sha1:
+            sha1 = media.sha1_file(path).hex()
+            remember_sha1(path, sha1)
+        # Favourite, archive and caption are read now: they are gone once the user deletes it.
+        found = _google_dates(_main_account(account), [_b64_hash(bytes.fromhex(sha1))]).get(
+            _b64_hash(bytes.fromhex(sha1))
+        )
+        _, fav, arch, cap = found or (0, 0, 0, "")
+        sq(
+            """UPDATE media_dates SET fix='waiting', error='', sha1=?, favorite=?, archived=?, caption=?
+               WHERE path=?""",
+            (sha1, int(bool(fav)), int(bool(arch)), cap or "", path),
+        )
+        _dates_checked.pop(path, None)
+        n += 1
+    reclaim_wake.set()
+    return {"queued": n}
+
+
+def dates_cancel(names):
+    n = 0
+    for name in names:
+        path = str(MEDIA / name)
+        if sq("SELECT 1 FROM media_dates WHERE path=? AND fix IN ('waiting','in_google','failed')", (path,)):
+            sq("UPDATE media_dates SET fix=NULL, error='' WHERE path=?", (path,))
+            n += 1
+    return {"cancelled": n}
+
+
+def _set_fix(path, fix, error=""):
+    sq("UPDATE media_dates SET fix=?, error=? WHERE path=?", (fix, error, path))
+    notify_change()
+
+
+def datefix_step(make_client=None):
+    """Upload again, with the right date, files the user deleted in Google Photos. Each waiting file is
+    checked every 2 minutes. Returns True if one was uploaded."""
+    make_client = make_client or _reclaim_client
+    rows = sq("SELECT path, sha1, favorite, archived, caption FROM media_dates WHERE fix IN ('waiting','in_google')")
+    now = time.time()
+    did = False
+    for path, sha1, fav, arch, cap in rows:
+        if now - _dates_checked.get(path, 0) < 100:
+            continue
+        _dates_checked[path] = now
+        found = q("SELECT size, mtime, account FROM files WHERE path=? AND status IN ('uploaded','exists')", (path,))
+        if not found or not sha1:
+            _set_fix(path, "failed", "This file isn't on the server any more")
+            continue
+        size, mtime, account = found[0]
+        account = _main_account(account)
+        name = rel(path)
+        try:
+            client = make_client(account)
+            digest = bytes.fromhex(sha1)
+            if client.api.find_remote_media_by_hash(digest):
+                continue  # the user hasn't deleted it yet (or it's still in Google's Trash)
+            if media.sha1_file(path) != digest:
+                _set_fix(path, "failed", "The file here changed after it was uploaded")
+                continue
+            when = best_date(path, size, mtime, sha1, fingerprint=False)[0]
+            dates_state["current"] = {"key": name, "step": "uploading", "done": 0, "total": size}
+            with upload_date(client, when):
+                key = _reupload(client, Path(path), _b64_hash(digest), size, name, track=dates_state)
+            if key is None:
+                _set_fix(path, "in_google", "Google still has it: also delete it from Google's Trash")
+                continue
+            _restore_details(client, _b64_hash(digest), fav, arch, cap)
+            q("UPDATE files SET media_key=?, status='uploaded', updated=? WHERE path=?", (key, time.time(), path))
+            sq("UPDATE media_dates SET fix='done', error='', sent=? WHERE path=?", (int(when), path))
+            sq("DELETE FROM undated_album WHERE path=? AND account=?", (path, account))  # added again
+            if (album := album_name(path, get_settings()["albums"])) is not None:
+                add_to_album(client, account, album, [key])
+            dates_state["error"] = ""
+            log(f"Fixed the date of {name}: {time.strftime('%Y-%m-%d %H:%M', time.gmtime(when))} UTC", "uploaded", name)
+            did = True
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"[:300]
+            print(f"Fix dates: {name}: {msg}", file=sys.stderr, flush=True)
+            if outage := outage_kind(e):
+                dates_state["error"] = outage
+                return did
+            sq("UPDATE media_dates SET error=? WHERE path=?", (msg, path))  # tried again in 2 minutes
+        finally:
+            dates_state["current"] = None
+    return did
 
 
 # ---------------------------------------------------------------- copy between Google accounts
@@ -3424,6 +3868,8 @@ class Handler(BaseHTTPRequestHandler):
                 arg("offset", 0, 0, 10**9),
             )
             self.cached("files:" + json.dumps(args), 60, lambda: list_files(*args))
+        elif path == "/api/dates":
+            self.json(dates_report(arg("account", "")))
         elif path == "/api/duplicates":
             self.cached("duplicates", 300, duplicates)
         elif path == "/api/activity":
@@ -3626,6 +4072,31 @@ class Handler(BaseHTTPRequestHandler):
                 self.json({"ok": True})
             else:
                 self.send(404, "{}")
+        elif path.startswith("/api/dates/"):
+            try:
+                req = json.loads(body or "{}")
+                names = [str(n) for n in req.get("paths") or []][:1000]
+            except (ValueError, AttributeError):
+                self.json({"error": "bad request"}, 400)
+                return
+            try:
+                if path == "/api/dates/fix":
+                    self.json(dates_fix(names))
+                elif path == "/api/dates/cancel":
+                    self.json(dates_cancel(names))
+                elif path == "/api/dates/set":
+                    self.json(dates_set(str(req.get("path", "")), req.get("when")))
+                elif path == "/api/dates/refresh":
+                    account = str(req.get("account", "")) or _main_account("")
+                    if account not in dict(accounts()):
+                        raise ValueError("unknown account")
+                    _refresh_requests.append(account)
+                    reclaim_wake.set()
+                    self.json({"ok": True})
+                else:
+                    self.send(404, "{}")
+            except (ValueError, TypeError) as e:
+                self.json({"error": str(e)}, 400)
         elif path == "/api/retry":
             one = (json.loads(body or "{}") if body.strip().startswith("{") else {}).get("path")
             if one:
