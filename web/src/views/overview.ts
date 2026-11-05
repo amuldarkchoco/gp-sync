@@ -1,5 +1,5 @@
-import { get, tz, type History, type Insights, type Status } from "../lib/api";
-import { heatLegend, heatmap, ring, setRing, sparkline } from "../lib/charts";
+import { get, tz, type FolderReport, type History, type Insights, type Status } from "../lib/api";
+import { donut, heatLegend, heatmap, ring, setRing, sparkline, type Slice } from "../lib/charts";
 import { $, $$, esc, html } from "../lib/dom";
 import { ago, bytes, clock, duration, fileName, ms, num, pct, speed } from "../lib/format";
 import { icon } from "../lib/icons";
@@ -12,6 +12,121 @@ let hist: History | null = null;
 let ins: Insights | null = null;
 let slowTimer = 0;
 let last: Status | null = null;
+
+// ---- where the photos are: pie charts per device (or folder) and photos vs videos
+let share: FolderReport | null = null;
+let shareBy: "devices" | "folders" = "devices";
+let shareMetric: "files" | "bytes" = "files";
+let shareAt = 0;
+let kindsDrawn = false; // the photos/videos donut needs the status, which can come later
+const SLICE_COLORS = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)"];
+const OTHER = "var(--ink-3)";
+
+async function loadShare(): Promise<void> {
+  shareAt = Date.now();
+  let r = await get<FolderReport>(`folders?group=${shareBy}&days=30&tz=${tz}`).catch(() => null);
+  if (r && shareBy === "devices" && !r.children.length) {
+    shareBy = "folders"; // no phone folders: show folders instead
+    r = await get<FolderReport>(`folders?group=folders&days=30&tz=${tz}`).catch(() => null);
+  }
+  share = r;
+  renderShare();
+}
+
+function pctText(part: number, whole: number): string {
+  const p = whole ? (part / whole) * 100 : 0;
+  return p > 0 && p < 1 ? "<1%" : `${Math.round(p)}%`;
+}
+
+function legendRow(color: string, name: string, value: number, total: number, extra = "", href = ""): string {
+  const label = href
+    ? `<a class="truncate hover:underline" href="${href}">${esc(name)}</a>`
+    : `<span class="truncate">${esc(name)}</span>`;
+  return `<li class="flex items-center gap-2 py-1.5 text-sm"><i class="size-2.5 shrink-0 rounded-full" style="background:${color}"></i>${label}
+    <span class="ml-auto shrink-0 tabular-nums">${pctText(value, total)}</span>
+    <span class="w-16 shrink-0 text-right text-xs text-ink-3 tabular-nums sm:w-20">${shareMetric === "files" ? num(value) : bytes(value)}</span>${extra}</li>`;
+}
+
+function renderShare(): void {
+  const el = document.getElementById("ov-share-body");
+  if (!el) return;
+  $$("button", $("#ov-share-by")).forEach((b) =>
+    b.setAttribute("aria-pressed", String(b.dataset.by === shareBy)),
+  );
+  $$("button", $("#ov-share-metric")).forEach((b) =>
+    b.setAttribute("aria-pressed", String(b.dataset.m === shareMetric)),
+  );
+  const m = (f: { files: number; bytes: number }) => (shareMetric === "files" ? f.files : f.bytes);
+  const fmt = (v: number) => (shareMetric === "files" ? num(v) : bytes(v));
+  // Groups: biggest first; past five slices the rest is one grey "Other", so colours never repeat.
+  const groups = [...(share?.children ?? [])].filter((c) => c.name && m(c) > 0).sort((a, b) => m(b) - m(a));
+  const shown = groups.length > 5 ? groups.slice(0, 4) : groups;
+  const rest = groups.slice(shown.length);
+  const total = groups.reduce((a, g) => a + m(g), 0);
+  const slices: Slice[] = shown.map((g, i) => ({
+    label: g.name,
+    value: m(g),
+    color: SLICE_COLORS[i]!,
+    tip: `${g.name}\n${fmt(m(g))} · ${pctText(m(g), total)}\n${Math.round(pct(g.synced, g.files))}% in Google Photos`,
+  }));
+  const restValue = rest.reduce((a, g) => a + m(g), 0);
+  if (rest.length)
+    slices.push({
+      label: "Other",
+      value: restValue,
+      color: OTHER,
+      tip: `${rest.length} more\n${fmt(restValue)} · ${pctText(restValue, total)}`,
+    });
+  const link = (g: (typeof groups)[number]) =>
+    `#/folders/${shareBy === "devices" || g.device ? "d" : "f"}/${(g.folders[0] ?? g.name).split("/").map(encodeURIComponent).join("/")}`;
+  const backed = (g: (typeof groups)[number]) => {
+    const p = Math.round(pct(g.synced, g.files));
+    return `<span class="flex w-16 shrink-0 items-center gap-1.5 sm:w-24" title="${p}% in Google Photos"><span class="bar h-1.5 flex-1"><i style="width:${p}%"></i></span><span class="w-8 text-right text-[11px] text-ink-3 tabular-nums">${p}%</span></span>`;
+  };
+  const lib = last?.library;
+  kindsDrawn = !!lib;
+  const kinds = lib
+    ? [
+        {
+          label: "Photos",
+          value: shareMetric === "files" ? (lib.photos ?? 0) : (lib.photo_bytes ?? 0),
+          color: "var(--s1)",
+        },
+        {
+          label: "Videos",
+          value: shareMetric === "files" ? (lib.videos ?? 0) : (lib.video_bytes ?? 0),
+          color: "var(--s2)",
+        },
+      ]
+    : [];
+  const kindTotal = kinds.reduce((a, k) => a + k.value, 0);
+  const center = (v: number, sub: string) =>
+    `<div><div class="num text-xl">${shareMetric === "files" ? num(v) : bytes(v)}</div><div class="text-[11px] text-ink-3">${sub}</div></div>`;
+  html(
+    el,
+    `<div class="grid gap-6 md:grid-cols-2">
+      <div class="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
+        ${donut(slices, center(total, shareBy === "devices" ? "on devices" : "in folders"))}
+        <div class="w-full min-w-0 flex-1"><div class="label mb-1">${shareBy === "devices" ? "By device" : "By folder"}</div>
+          ${
+            groups.length
+              ? `<ul>${shown.map((g, i) => legendRow(SLICE_COLORS[i]!, g.name, m(g), total, backed(g), link(g))).join("")}${rest.length ? legendRow(OTHER, `Other (${rest.length})`, restValue, total) : ""}</ul>`
+              : `<p class="py-2 text-sm text-ink-3">${share ? "Nothing here yet" : "Loading…"}</p>`
+          }</div>
+      </div>
+      <div class="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
+        ${donut(
+          kinds.map((k) => ({ ...k, tip: `${k.label}\n${fmt(k.value)} · ${pctText(k.value, kindTotal)}` })),
+          center(kindTotal, "backed-up library"),
+        )}
+        <div class="w-full min-w-0 flex-1"><div class="label mb-1">Photos and videos</div>
+          <ul>${kinds.map((k) => legendRow(k.color, k.label, k.value, kindTotal)).join("")}</ul>
+          ${lib ? `<p class="mt-2 text-xs text-ink-3">${shareMetric === "files" ? `Videos are ${pctText(lib.videos ?? 0, lib.files)} of the files but ${pctText(lib.video_bytes ?? 0, lib.bytes)} of the space.` : `Photos take ${bytes(lib.photo_bytes)} and videos ${bytes(lib.video_bytes)}.`}</p>` : ""}
+        </div>
+      </div>
+    </div>`,
+  );
+}
 
 function streak(h: History): number {
   const byDay = new Map(h.data.map((d) => [d.day, d.photos + d.videos + d.existing]));
@@ -177,6 +292,7 @@ function upNext(s: Status, current: string): string {
 const CARDS: [string, string][] = [
   ["ov-hero", "Backed up"],
   ["ov-kpis", "Speed, today, streak, CPU, memory"],
+  ["ov-share", "Where your photos are"],
   ["ov-network", "Network"],
   ["ov-glance", "At a glance"],
   ["ov-now", "Now"],
@@ -301,6 +417,11 @@ const overview: View = {
         ${tile({ id: "k-mem", label: "App memory", value: "–", ic: "memory", chart: "" })}
       </section>
 
+      <section class="card lg:col-span-12" data-card="ov-share">
+        ${cardHead("Where your photos are", "chart", `<div class="seg" id="ov-share-by"><button data-by="devices">Devices</button><button data-by="folders">Folders</button></div><div class="seg ml-2" id="ov-share-metric"><button data-m="files">Files</button><button data-m="bytes">Size</button></div>`)}
+        <div class="card-b" id="ov-share-body"><div class="skeleton h-44"></div></div>
+      </section>
+
       <section class="card flex min-w-0 flex-col lg:col-span-8" data-card="ov-network">
         ${cardHead("Network", "wifi", `<span class="hidden items-center gap-3 sm:flex"><span class="flex items-center gap-1.5"><i class="size-2 rounded-full bg-s1"></i>Upload</span><span class="flex items-center gap-1.5"><i class="size-2 rounded-full bg-s2"></i>Download</span></span><div class="seg ml-2" id="ov-range">${rangeButtons("live")}</div>`)}
         <div class="card-b flex-1"><div id="ov-net" data-chart class="h-[200px] w-full sm:h-[300px]"></div></div>
@@ -342,6 +463,19 @@ const overview: View = {
       const b = (e.target as HTMLElement).closest<HTMLElement>("[data-now]");
       if (b) document.getElementById(b.dataset.now === "resume" ? "btn-pause" : "btn-sync")?.click();
     });
+    $("#ov-share-by").addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
+      if (!b) return;
+      shareBy = b.dataset.by as "devices" | "folders";
+      void loadShare();
+    });
+    $("#ov-share-metric").addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
+      if (!b) return;
+      shareMetric = b.dataset.m as "files" | "bytes";
+      renderShare();
+    });
+    void loadShare();
     chart = new NetChart($("#ov-net"), matchMedia("(max-width: 640px)").matches ? 200 : 300);
     $("#ov-range").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-range]");
@@ -354,6 +488,8 @@ const overview: View = {
   },
   update(s) {
     last = s;
+    if (Date.now() - shareAt > 60_000) void loadShare(); // counts change slowly: once a minute
+    else if (!kindsDrawn) renderShare();
     const lib = s.library;
     const p = pct(lib.synced_files, lib.files);
     setRing($("#ov-hero .ring-box svg"), p);

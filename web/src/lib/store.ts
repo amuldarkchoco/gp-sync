@@ -38,7 +38,20 @@ export function isLive(): boolean {
   return Date.now() - lastPush < 6000;
 }
 
+let pageVersion = "";
+
+/** The app was updated while this page was open: load the new page (once per version). */
+function reloadIfUpdated(s: Status): boolean {
+  if (!pageVersion) pageVersion = s.version;
+  if (!s.version || s.version === pageVersion) return false;
+  if (sessionStorage.getItem("reloaded-for") === s.version) return false; // tried already
+  sessionStorage.setItem("reloaded-for", s.version);
+  location.reload();
+  return true;
+}
+
 function publish(s: Status): void {
+  if (reloadIfUpdated(s)) return;
   current = s;
   failures = 0;
   document.documentElement.dataset.offline = "";

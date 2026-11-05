@@ -21,6 +21,8 @@
   --color-s1: var(--s1);
   --color-s2: var(--s2);
   --color-s3: var(--s3);
+  --color-s4: var(--s4);
+  --color-s5: var(--s5);
   --color-good: var(--good);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
@@ -44,6 +46,8 @@
   --s1: #3987e5;
   --s2: #d95926;
   --s3: #199e70;
+  --s4: #c98500; /* slots 4 and 5 of the validated categorical order (yellow, magenta) */
+  --s5: #d55181;
   --good: #30d158;
   --warn: #ffb340;
   --bad: #ff6961;
@@ -76,6 +80,8 @@
   --s1: #2a78d6;
   --s2: #eb6834;
   --s3: #1baf7a;
+  --s4: #eda100;
+  --s5: #e87ba4;
   --good: #248a3d;
   --warn: #b25000;
   --bad: #d70015;
@@ -1262,4 +1268,15 @@ body::before {
 }
 .heat rect {
   filter: drop-shadow(0 1px 0.5px rgb(0 0 0 / 0.18));
+}
+
+/* Donut slices: thin highlight on hover, like the bars. */
+.donut-arc {
+  transition:
+    stroke-width 0.15s ease,
+    opacity 0.15s ease;
+  cursor: default;
+}
+svg:hover > .donut-arc:not(:hover) {
+  opacity: 0.55;
 }

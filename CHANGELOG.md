@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.5
+
+- Upload first: pick folders or devices whose photos go to Google before the rest (Upload first
+  on a folder or device; reorder or remove them in the Upload order card on Folders). A change
+  re-orders the files still waiting right away
+- Overview: "Where your photos are" card with pie charts per device (or folder) and photos vs
+  videos, by files or size, with each device's backed-up share
+- Folders: the chart sits in the summary card at the top (it was below the endless photo grid);
+  a phone's folder (Photos/iPhone) shows as a device everywhere and opens the device view
+- Copy accounts: every connected account is a card under "Copy from" and "Copy to"; pick any
+  two (picking one that's on the other side swaps them); shows how many accounts are connected.
+  With one account the empty card above "Connect a second Google account" is gone
+- After an update, open dashboards reload by themselves, so nobody keeps the old page
+
 ## 1.1.4
 
 - Folders and Devices only list and count the folders you back up; others (like Downloads) are

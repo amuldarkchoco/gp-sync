@@ -235,6 +235,7 @@ DEFAULT_SETTINGS = {
         "weekly": True,
     },
     "hash_existing": True,  # duplicate finder: fingerprint already uploaded files when idle
+    "priority": [],  # folders whose files upload first ("Photos/iPhone"), in this order
 }
 SECRET_KEYS = ("ntfy_token", "telegram_token")
 
@@ -272,6 +273,9 @@ def update_settings(changes):
     if new["albums"] not in ("off", "top", "parent"):
         new["albums"] = "off"
     n["round_min"] = max(1, int(n["round_min"]))
+    pr = new.get("priority") or []
+    pr = [clean_folder(p) for p in (pr if isinstance(pr, list) else [])]
+    new["priority"] = list(dict.fromkeys(p for p in pr if p))[:10]
     if new["folders"] is not None:
         # One account per folder, or a list (the first is the main one): up to MAX_ACCOUNTS.
         new["folders"] = {
@@ -1237,12 +1241,47 @@ def scan(st=None):
                 if now - fst.st_mtime < SETTLE:
                     continue
                 todo.append((path, fst.st_size, fst.st_mtime, account))
+    prio = st.get("priority") or []
+    if prio:  # folders picked to go first; the rest keeps its usual order
+        todo.sort(key=lambda i: priority_rank(rel(i[0]), prio))
+        copies_todo.sort(key=lambda i: priority_rank(rel(i[0]), prio))
     state["library"] = lib
     state["folders"] = folders
     state["index"] = index
     state["pending"] = [rel(p) for p, *_ in todo[:500]]
     state["copies_pending"] = len(copies_todo)
     return todo + copies_todo
+
+
+def priority_rank(name, prio):
+    """Where a file goes in the upload order: its folder's place in the priority list, or last."""
+    for i, p in enumerate(prio):
+        if name == p or name.startswith(p + "/"):
+            return i
+    return len(prio)
+
+
+class UploadQueue:
+    """The files of one upload round. If the priority list changes while it runs, the files not
+    sent yet are put in the new order at once (no need to wait for the next scan)."""
+
+    def __init__(self, items):
+        self.items = list(items)
+        self.seen = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not self.items:
+            raise StopIteration
+        prio = get_settings().get("priority") or []
+        if prio != self.seen:
+            if self.seen is not None:
+                self.items.sort(key=lambda i: priority_rank(rel(i[0]), prio))
+                state["pending"] = [rel(p) for p, *_ in self.items[:500]]
+            self.seen = prio
+        return self.items.pop(0)
 
 
 def added_time(fst):
@@ -1313,7 +1352,7 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
         label, folder = k
         g = groups.get(label)
         if g is None:
-            g = groups[label] = {**_blank(), "folders": set(), "sub": False, "daily": {}, "recent": []}
+            g = groups[label] = {**_blank(), "folders": set(), "sub": False, "daily": {}, "recent": [], "subs": set()}
         g["folders"].add(folder)
         if len(g["recent"]) < 4:
             heapq.heappush(g["recent"], (added, name))
@@ -1321,6 +1360,7 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
             heapq.heapreplace(g["recent"], (added, name))
         if label and name.count("/") > folder.count("/") + 1:
             g["sub"] = True  # has folders inside: the dashboard can open it
+            g["subs"].add(name[len(folder) + 1 :].split("/", 1)[0])
         for d in (total, g):
             d["videos" if video else "photos"] += 1
             d["video_bytes" if video else "photo_bytes"] += size
@@ -1358,6 +1398,8 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
                 "series": [g["daily"].get(n, 0) for n in range(first, today + 1)],
                 "uploads": group == "devices" and uploads in g["folders"],
                 "recent": [n for _, n in sorted(g["recent"], reverse=True)],
+                # A phone's folder: a backup app filled it with folders 00..ff
+                "device": group == "devices" or (len(g["subs"]) >= 4 and all(BUCKET.fullmatch(n) for n in g["subs"])),
             }
         )
     children.sort(key=lambda c: (c["name"] == "", -c["files"], c["name"].lower()))
@@ -1526,7 +1568,7 @@ def upload_all(client, todo, account="", st=None):
     queued = collections.defaultdict(list)
     round_files = round_bytes = 0
     try:
-        for path, size, mtime, *rest in todo:
+        for path, size, mtime, *rest in UploadQueue(todo):
             copy = len(rest) > 1 and rest[1]  # another account's copy, not the folder's main backup
             if PAUSE_FILE.exists():
                 log("Paused", "pause")

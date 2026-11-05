@@ -530,6 +530,8 @@ def test_backup_app_buckets_are_hidden_and_files_listed(media):
     sync.state["last_scan"] = time.time()
     r = sync.folder_report("Photos/iPhone", "folders", 30)
     assert r["buckets"] and r["children"] == [] and r["total"]["files"] == 4
+    photos = {c["name"]: c for c in sync.folder_report("Photos", "folders", 30)["children"]}
+    assert photos["iPhone"]["device"] and not photos["trip"]["device"]
     devices = sync.folder_report("", "devices", 30)["children"]
     assert len(next(d for d in devices if d["name"] == "iPhone")["recent"]) == 4
 
@@ -563,3 +565,29 @@ def test_overview_only_counts_backed_up_folders(media):
     # Opened on purpose, it still shows what's in it.
     assert sync.folder_files("Downloads")["total"] == 1
     assert sync.folder_report("Downloads", "folders", 30)["total"]["files"] == 1
+
+
+# --- upload priority
+
+
+def test_priority_folders_upload_first(media):
+    (media / "Photos" / "zz-phone").mkdir()
+    (media / "Photos" / "zz-phone" / "z.jpg").write_bytes(b"z" * 10)
+    names = lambda todo: [sync.rel(p) for p, *_ in todo]  # noqa: E731
+    assert names(sync.scan())[0] != "Photos/zz-phone/z.jpg"  # usual order: by folder name
+    st = sync.update_settings({"priority": ["Photos/zz-phone", "../etc", "Photos/zz-phone", "Videos"]})
+    assert st["priority"] == ["Photos/zz-phone", "Videos"]  # unsafe and repeated ones dropped
+    order = names(sync.scan(st))
+    assert order[:2] == ["Photos/zz-phone/z.jpg", "Videos/c.mp4"]
+    sync.update_settings({"priority": []})
+
+
+def test_priority_change_reorders_a_running_round(media):
+    todo = sync.scan()
+    seen = []
+    queue = sync.UploadQueue(todo)
+    seen.append(sync.rel(next(queue)[0]))
+    sync.update_settings({"priority": ["Videos"]})  # changed while uploading
+    seen += [sync.rel(item[0]) for item in queue]
+    assert seen[1] == "Videos/c.mp4" and len(seen) == len(todo)
+    sync.update_settings({"priority": []})

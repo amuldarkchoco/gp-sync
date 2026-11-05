@@ -453,3 +453,33 @@ export function replay(el: HTMLElement): void {
   c._zoom = null;
   c._drawn = false;
 }
+
+export interface Slice {
+  label: string;
+  value: number;
+  color: string;
+  tip: string;
+}
+
+/** Donut for a part-to-whole split: a 2px gap between slices, hover shows the slice. The middle
+ *  holds `center` (the total). Slices under 1% are still drawn as a sliver so they can be hovered. */
+export function donut(slices: Slice[], center = "", size = 176, thick = 22): string {
+  const total = slices.reduce((a, s) => a + s.value, 0);
+  const r = (size - thick) / 2;
+  const c = 2 * Math.PI * r;
+  const gap = slices.filter((s) => s.value > 0).length > 1 ? 2 : 0;
+  let at = 0;
+  const arcs = total
+    ? slices
+        .filter((s) => s.value > 0)
+        .map((s) => {
+          const len = Math.max(1.5, (s.value / total) * c - gap);
+          const arc = `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${s.color}" stroke-width="${thick}" stroke-dasharray="${len} ${c}" stroke-dashoffset="${-at}" transform="rotate(-90 ${size / 2} ${size / 2})" class="donut-arc" data-tip="${esc(s.tip)}"/>`;
+          at += (s.value / total) * c;
+          return arc;
+        })
+        .join("")
+    : `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--panel-2)" stroke-width="${thick}"/>`;
+  return `<div class="relative shrink-0" style="width:${size}px;height:${size}px"><svg viewBox="0 0 ${size} ${size}" class="size-full" role="img" aria-label="${esc(slices.map((s) => `${s.label} ${total ? Math.round((s.value / total) * 100) : 0}%`).join(", "))}">${arcs}</svg>
+    <div class="pointer-events-none absolute inset-0 grid place-items-center text-center">${center}</div></div>`;
+}

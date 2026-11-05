@@ -66,13 +66,20 @@ function itemRow(i: CopyItem): string {
     ${badge(label, tone, ic)}</div>`;
 }
 
-function picker(id: string, value: string, accs: string[], other: string): string {
-  return `<select class="input w-auto max-w-[16rem]" id="${id}">${accs
-    .map(
-      (a) =>
-        `<option value="${esc(a)}" ${a === value ? "selected" : ""} ${a === other ? "disabled" : ""}>${esc(a)}</option>`,
-    )
-    .join("")}</select>`;
+/** Every connected account as a card, on both sides: pick any one as "from" and any as "to". */
+function picker(side: "src" | "dst", accs: string[]): string {
+  const chosen = side === "src" ? src : dst;
+  const other = side === "src" ? dst : src;
+  return `<div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Copy ${side === "src" ? "from" : "to"}">${accs
+    .map((a) => {
+      const on = a === chosen;
+      const hint = a === other ? "Picked on the other side: picking it here swaps them" : "";
+      return `<button class="flex min-w-0 max-w-full items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm transition ${on ? "border-accent bg-accent/10" : "border-line hover:bg-panel-2"}" role="radio" aria-checked="${on}" data-side="${side}" data-acc="${esc(a)}" ${hint ? `title="${hint}"` : ""}>
+        <span class="grid size-7 shrink-0 place-items-center rounded-full ${on ? "bg-accent text-white" : "bg-panel-2 text-ink-2"} text-xs font-semibold uppercase">${esc(a.slice(0, 1))}</span>
+        <span class="min-w-0 truncate ${on ? "font-medium" : a === other ? "text-ink-3" : ""}">${esc(a)}</span>
+        ${on ? icon("check", "size-4 shrink-0 text-accent") : ""}</button>`;
+    })
+    .join("")}</div>`;
 }
 
 function selection(r: CopyReport): { count: number; bytes: number } {
@@ -128,7 +135,7 @@ function startCard(r: CopyReport): string {
              <label><span class="text-ink-3">To year</span><select class="input mt-1" id="cp-to">${opt(toYear)}</select></label></div>`
           : ""
       }
-      <div class="rounded-xl bg-panel-2 p-3 text-sm">About <b>${num(sel.count)}</b> items · ${bytes(sel.bytes)} from <b>${esc(r.src)}</b> to <b>${esc(r.dst)}</b>.</div>
+      <div class="rounded-xl bg-panel-2 p-3 text-sm">About <b>${num(sel.count)}</b> item${sel.count === 1 ? "" : "s"} · ${bytes(sel.bytes)} from <b>${esc(r.src)}</b> to <b>${esc(r.dst)}</b>.</div>
       <button class="btn primary w-full justify-center" id="cp-start" ${sel.count ? "" : "disabled"}>${icon("copy")}Start copying</button>
       <p class="text-xs text-ink-3">One file at a time, newest first: downloaded, checked to be Google's original, uploaded to the other account the free way, then removed here. Comes over: original quality, date, favourite, archive, caption. Doesn't: albums, people names, shared albums. Nothing is deleted in either account.</p>
     </div></section>`;
@@ -165,16 +172,23 @@ function render(): void {
         <p class="text-sm text-ink-3">Copying needs both accounts connected in GP Sync. Add the second one, then come back here.</p>
         <a class="btn primary mt-2" href="#/settings/accounts">${icon("plus")}Add an account</a></div></section>`,
     );
-    html($("#cp-bar"), "");
+    $("#cp-bar").classList.add("hidden"); // nothing to pick with one account
     return;
   }
+  const max = status()?.max_accounts ?? 5;
+  $("#cp-bar").classList.remove("hidden");
   html(
     $("#cp-bar"),
-    `<span class="text-sm text-ink-3">From</span>${picker("cp-src", src, accs, dst)}
-     <button class="btn sm" id="cp-swap" title="Swap the two accounts">Swap</button>
-     <span class="text-sm text-ink-3">to</span>${picker("cp-dst", dst, accs, src)}
-     <span class="text-xs text-ink-3 lg:ml-auto">${r?.refreshed.src ? `Libraries read ${ago(Math.min(r.refreshed.src, r.refreshed.dst ?? r.refreshed.src))}` : ""}</span>
-     <button class="btn" id="cp-refresh" ${r?.refreshing ? "disabled" : ""}>${r?.refreshing ? `${icon("loader", "spin")}Reading libraries…` : `${icon("refresh")}${r?.listed.src && r.listed.dst ? "Refresh from Google" : "Read both libraries"}`}</button>`,
+    `<div class="grid gap-4 p-4 lg:grid-cols-[1fr_auto_1fr] lg:items-start">
+       <div class="min-w-0"><div class="label mb-2">Copy from</div>${picker("src", accs)}</div>
+       <button class="btn icon self-center justify-self-center" id="cp-swap" title="Swap from and to" aria-label="Swap from and to">${icon("refresh")}</button>
+       <div class="min-w-0"><div class="label mb-2">Copy to</div>${picker("dst", accs)}</div>
+     </div>
+     <div class="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3 text-xs text-ink-3">
+       <span>${num(accs.length)} of ${num(max)} accounts connected${accs.length < max ? ` · <a class="link-btn" href="#/settings/accounts">Add an account</a>` : ""}</span>
+       <span class="ml-auto">${r?.refreshed.src ? `Libraries read ${ago(Math.min(r.refreshed.src, r.refreshed.dst ?? r.refreshed.src))}` : ""}</span>
+       <button class="btn sm" id="cp-refresh" ${r?.refreshing ? "disabled" : ""}>${r?.refreshing ? `${icon("loader", "spin")}Reading libraries…` : `${icon("refresh")}${r?.listed.src && r.listed.dst ? "Refresh from Google" : "Read both libraries"}`}</button>
+     </div>`,
   );
   if (!r || r.ready === false) {
     html($("#cp-body"), `<div class="card empty">${icon("warn")}Couldn't load</div>`);
@@ -221,7 +235,14 @@ function onClick(e: Event): void {
   const b = (e.target as HTMLElement).closest<HTMLElement>("button");
   if (!b) return;
   if (b.id === "cp-refresh") void act("refresh", {}, () => "Reading both libraries from Google");
-  else if (b.id === "cp-swap") {
+  else if (b.dataset.side && b.dataset.acc) {
+    const acc = b.dataset.acc;
+    const side = b.dataset.side;
+    if (side === "src" && acc !== src) [src, dst] = acc === dst ? [acc, src] : [acc, dst];
+    else if (side === "dst" && acc !== dst) [src, dst] = acc === src ? [dst, acc] : [src, acc];
+    else return;
+    void load();
+  } else if (b.id === "cp-swap") {
     [src, dst] = [dst, src];
     void load();
   } else if (b.dataset.kind) {
@@ -257,18 +278,15 @@ const copyView: View = {
   mount(el) {
     kinds = new Set(["photo", "video"]);
     el.innerHTML = `
-    <section class="card mb-4 flex flex-wrap items-center gap-2 p-3" id="cp-bar"></section>
+    <section class="card mb-4 hidden" id="cp-bar"></section>
     <div id="cp-body"><div class="grid grid-cols-2 gap-4 xl:grid-cols-4">${'<div class="card skeleton h-28"></div>'.repeat(4)}</div><div class="card skeleton mt-4 h-72"></div></div>`;
     el.addEventListener("click", onClick);
     el.addEventListener("change", (e) => {
       const t = e.target as HTMLSelectElement;
-      if (t.id === "cp-src") src = t.value;
-      else if (t.id === "cp-dst") dst = t.value;
-      else if (t.id === "cp-from") fromYear = t.value;
+      if (t.id === "cp-from") fromYear = t.value;
       else if (t.id === "cp-to") toYear = t.value;
       else return;
-      if (t.id === "cp-src" || t.id === "cp-dst") void load();
-      else render();
+      render();
     });
     void load();
     timer = window.setInterval(() => {

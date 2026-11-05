@@ -248,6 +248,8 @@ export interface Settings {
   albums: "off" | "top" | "parent";
   notify: Notify;
   hash_existing: boolean;
+  /** Folders whose files upload first, in this order ("Photos/iPhone"). */
+  priority?: string[];
 }
 export interface FileItem {
   name: string;
@@ -282,6 +284,8 @@ export interface FolderGroup {
   uploads: boolean;
   /** Its newest files (up to 4), for thumbnails. */
   recent?: string[];
+  /** A phone's folder (filled by a backup app with folders 00..ff): opens as a device. */
+  device?: boolean;
 }
 export interface FolderReport {
   ready: boolean;

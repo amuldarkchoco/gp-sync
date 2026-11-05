@@ -1,6 +1,14 @@
-import { get, tz, type FolderFiles, type FolderGroup, type FolderReport } from "../lib/api";
+import {
+  get,
+  post,
+  tz,
+  type FolderFiles,
+  type FolderGroup,
+  type FolderReport,
+  type Settings,
+} from "../lib/api";
 import { sparkline } from "../lib/charts";
-import { $, $$, esc, html } from "../lib/dom";
+import { $, $$, esc, html, toast } from "../lib/dom";
 import { ago, bytes, date, fileName, num, pct } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
 import { host } from "../lib/store";
@@ -33,6 +41,67 @@ let fSort = "new";
 let fRequest = 0;
 let fLoading = false;
 let observer: IntersectionObserver | null = null;
+
+// ---- upload order: folders whose files go to Google first (saved in settings)
+let prio: string[] = [];
+
+async function loadPrio(): Promise<void> {
+  const st = await get<Settings>("settings").catch(() => null);
+  prio = st?.priority ?? [];
+  renderPrio();
+  if (report) render();
+}
+
+async function savePrio(next: string[], message: string): Promise<void> {
+  const before = prio;
+  prio = next;
+  renderPrio();
+  if (report) render();
+  try {
+    const st = await post<Settings>("settings", { priority: next });
+    prio = st.priority ?? next;
+    toast(message, "good");
+  } catch (e) {
+    prio = before;
+    toast((e as Error).message, "bad");
+  }
+  renderPrio();
+  if (report) render();
+}
+
+/** "Photos/I2220 (2)" -> "I2220", "Photos/trip/day2" -> "day2". */
+function prioName(p: string): string {
+  const parts = p.split("/");
+  return parts.length === 2 ? deviceName(parts[1]!) : (parts.at(-1) ?? p);
+}
+
+function prioBadge(p: string): string {
+  const i = prio.indexOf(p);
+  return i < 0 ? "" : badge(`#${i + 1} first`, "good", "up");
+}
+
+function renderPrio(): void {
+  const card = document.getElementById("fo-prio-card");
+  if (!card) return;
+  const show = !path && prio.length > 0;
+  card.classList.toggle("hidden", !show);
+  if (!show) return;
+  html(
+    card,
+    `${cardHead("Upload order", "up", `<span class="text-xs text-ink-3">These go to Google first</span>`)}
+     <ol class="divide-y divide-line">${prio
+       .map(
+         (p, i) => `<li class="flex items-center gap-3 px-4 py-2.5">
+           <span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs tabular-nums">${i + 1}</span>
+           <a class="min-w-0 flex-1" href="#/folders/${p.split("/").length === 2 ? "d" : "f"}/${p.split("/").map(encodeURIComponent).join("/")}"><span class="block truncate text-sm font-medium">${esc(prioName(p))}</span><span class="block truncate text-xs text-ink-3">${esc(p)}</span></a>
+           <button class="btn icon sm" data-prio-move="${esc(p)}" data-dir="-1" ${i === 0 ? "disabled" : ""} aria-label="Earlier">${icon("up")}</button>
+           <button class="btn icon sm" data-prio-move="${esc(p)}" data-dir="1" ${i === prio.length - 1 ? "disabled" : ""} aria-label="Later">${icon("down")}</button>
+           <button class="btn icon sm" data-prio-remove="${esc(p)}" aria-label="Back to the usual order">${icon("x")}</button></li>`,
+       )
+       .join("")}</ol>
+     <p class="border-t border-line px-4 py-2.5 text-xs text-ink-3">Everything else follows in the usual order. A change applies to the files still waiting right away.</p>`,
+  );
+}
 
 const RANGES: [number, string][] = [
   [7, "7 d"],
@@ -165,7 +234,9 @@ function renderSummary(r: FolderReport): void {
     $("#fo-summary"),
     `<div class="flex flex-wrap items-center gap-x-3 gap-y-1"><span class="truncate text-base font-semibold">${esc(title)}</span>
        <span class="text-xs text-ink-3">${num(t.files)} files · ${bytes(t.bytes)}</span>
-       <span class="ml-auto text-xs text-ink-3 tabular-nums">${done}% in Google Photos</span></div>
+       ${path ? prioBadge(path) : ""}
+       <span class="ml-auto text-xs text-ink-3 tabular-nums">${done}% in Google Photos</span>
+       ${path && t.files > t.synced ? `<button class="btn sm ${prio.includes(path) ? "" : "primary"}" data-prio-toggle="${esc(path)}">${icon(prio.includes(path) ? "x" : "up")}${prio.includes(path) ? "Usual order" : "Upload first"}</button>` : ""}</div>
      <div class="bar mt-2"><i style="width:${done}%"></i></div>
      <div class="mt-4 grid grid-cols-3 gap-4 lg:grid-cols-6">
        ${stat("Photos", num(t.photos), bytes(t.photo_bytes))}
@@ -182,20 +253,23 @@ function renderSummary(r: FolderReport): void {
 
 function rowTarget(c: FolderGroup): string {
   if (group === "devices" && !path) return c.folders.length === 1 ? folderHref(c.folders[0]!) : "";
-  return folderHref(c.folders[0] ?? path);
+  const to = c.folders[0] ?? path;
+  // A phone's folder opens as that device, whichever way it was reached.
+  if (c.device) return `#/folders/d/${to.split("/").map(encodeURIComponent).join("/")}`;
+  return folderHref(to);
 }
 
 function rowHtml(c: FolderGroup): string {
   const done = percent(c.synced, c.files);
   const devices = group === "devices" && !path;
-  const ic = devices ? (c.uploads ? "upload" : "phone") : "folder";
+  const ic = devices ? (c.uploads ? "upload" : "phone") : c.device ? "phone" : "folder";
   const sub = devices
     ? c.uploads
       ? "Sent from the Upload page"
       : c.folders.length > 1
         ? c.folders.map((f) => `<a class="link-btn" href="${folderHref(f)}">${esc(f)}</a>`).join(" · ")
         : esc(c.folders[0] ?? "")
-    : `${num(c.photos)} photos · ${num(c.videos)} videos`;
+    : `${c.device ? "Device · " : ""}${num(c.photos)} photos · ${num(c.videos)} videos`;
   const href = rowTarget(c);
   const tag = href ? "a" : "div";
   const thumbs = (c.recent ?? [])
@@ -207,7 +281,7 @@ function rowHtml(c: FolderGroup): string {
   return `<${tag} ${href ? `href="${href}"` : ""} class="row ${href ? "clickable" : ""} flex-wrap gap-y-2 px-4 py-3">
     <span class="grid size-10 shrink-0 place-items-center rounded-xl bg-panel-2 text-ink-2">${icon(ic, "size-5")}</span>
     <div class="min-w-0 flex-1 basis-40">
-      <div class="flex items-center gap-2"><span class="truncate text-sm font-medium">${esc(c.name)}</span>${c.new ? badge(`+${num(c.new)} new`, "info") : ""}</div>
+      <div class="flex items-center gap-2"><span class="truncate text-sm font-medium">${esc(c.name)}</span>${c.folders.length === 1 ? prioBadge(c.folders[0]!) : ""}${c.new ? badge(`+${num(c.new)} new`, "info") : ""}</div>
       <div class="truncate text-xs text-ink-3">${sub}</div>
       <div class="mt-1.5 flex items-center gap-2"><div class="bar h-1.5 max-w-48 flex-1"><i style="width:${done}%"></i></div><span class="text-xs text-ink-3 tabular-nums">${done}%</span></div>
     </div>
@@ -366,7 +440,7 @@ function renderChart(r: FolderReport): void {
     $("#fo-chart"),
     empty
       ? `<div class="empty">${icon("chart")}Nothing new in ${rangeText()}</div>`
-      : `<div class="cols flex h-40 items-end gap-[3px]">${rows
+      : `<div class="cols flex h-20 items-end gap-[3px] sm:h-28">${rows
           .map((d) => {
             const head = days > 90 ? `Week of ${nice(d.day)}` : nice(d.day, true);
             const tip = `${head}\nPhotos: ${num(d.photos)}\nVideos: ${num(d.videos)}`;
@@ -410,7 +484,7 @@ function skeleton(): void {
     '<div class="skeleton h-5 w-40"></div><div class="skeleton mt-3 h-2"></div><div class="skeleton mt-4 h-12"></div>',
   );
   html($("#fo-list"), '<div class="skeleton m-4 h-12"></div>'.repeat(3));
-  html($("#fo-chart"), '<div class="skeleton h-40"></div>');
+  html($("#fo-chart"), '<div class="skeleton h-28"></div>');
   html($("#fo-files-tools"), "");
   html(
     $("#fo-files"),
@@ -431,6 +505,8 @@ function open(): void {
   observer?.disconnect();
   skeleton();
   renderBar();
+  renderPrio();
+  void loadPrio();
   html($("#fo-files-sub"), filesSub());
   void load();
   void loadFiles(true);
@@ -445,16 +521,19 @@ const folders: View = {
       <div class="seg" id="fo-group"><button data-g="devices">${icon("devices")}Devices</button><button data-g="folders">${icon("folder")}Folders</button></div>
       <div class="order-first w-full min-w-0 px-1 pb-1 sm:order-none sm:w-auto sm:flex-1 sm:pb-0" id="fo-crumbs"></div>
     </section>
-    <section class="card mb-4 p-4" id="fo-summary"></section>
+    <section class="card mb-4">
+      <div class="p-4" id="fo-summary"></div>
+      <div class="border-t border-line">
+        ${cardHead("Added per day", "chart", `<span class="hidden items-center gap-3 sm:flex"><span class="flex items-center gap-1.5"><i class="size-2 rounded-full bg-s1"></i>Photos</span><span class="flex items-center gap-1.5"><i class="size-2 rounded-full bg-s2"></i>Videos</span></span><div class="seg ml-2" id="fo-range">${RANGES.map(([d, l]) => `<button data-d="${d}" class="max-sm:px-2.5">${l}</button>`).join("")}</div>`)}
+        <div class="card-b" id="fo-chart"></div>
+      </div>
+    </section>
+    <section class="card mb-4 hidden overflow-hidden" id="fo-prio-card"></section>
     <section class="card mb-4 overflow-hidden" id="fo-list-card"><div id="fo-list-head"></div><div class="divide-y divide-line" id="fo-list"></div></section>
     <section class="card mb-4" id="fo-files-card">
       ${cardHead("Photos and videos", "library", `<span class="hidden text-xs text-ink-3 sm:inline" id="fo-files-sub"></span>`)}
       <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3" id="fo-files-tools"></div>
       <div class="p-3" id="fo-files"></div>
-    </section>
-    <section class="card">
-      ${cardHead("Added per day", "chart", `<span class="hidden items-center gap-3 sm:flex"><span class="flex items-center gap-1.5"><i class="size-2 rounded-full bg-s1"></i>Photos</span><span class="flex items-center gap-1.5"><i class="size-2 rounded-full bg-s2"></i>Videos</span></span><div class="seg ml-2" id="fo-range">${RANGES.map(([d, l]) => `<button data-d="${d}">${l}</button>`).join("")}</div>`)}
-      <div class="card-b" id="fo-chart"></div>
     </section>`;
     $("#fo-group").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
@@ -465,6 +544,35 @@ const folders: View = {
       if (!b) return;
       days = Number(b.dataset.d);
       void load();
+    });
+    el.addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLElement>(
+        "[data-prio-toggle], [data-prio-move], [data-prio-remove]",
+      );
+      if (!b) return;
+      e.preventDefault();
+      if (b.dataset.prioToggle) {
+        const p = b.dataset.prioToggle;
+        if (prio.includes(p))
+          void savePrio(
+            prio.filter((x) => x !== p),
+            `${prioName(p)} is back in the usual order`,
+          );
+        else void savePrio([...prio, p].slice(-10), `${prioName(p)} uploads first`);
+      } else if (b.dataset.prioRemove) {
+        const p = b.dataset.prioRemove;
+        void savePrio(
+          prio.filter((x) => x !== p),
+          `${prioName(p)} is back in the usual order`,
+        );
+      } else if (b.dataset.prioMove) {
+        const i = prio.indexOf(b.dataset.prioMove);
+        const j = i + Number(b.dataset.dir);
+        if (i < 0 || j < 0 || j >= prio.length) return;
+        const next = [...prio];
+        [next[i], next[j]] = [next[j]!, next[i]!];
+        void savePrio(next, "Upload order saved");
+      }
     });
     const card = $("#fo-files-card");
     card.addEventListener("click", (e) => {
