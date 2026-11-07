@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.3
+
+- Sources: a new page shows where every photo and video came from (a camera, Snapchat, a screenshot,
+  Instagram, TikTok, WhatsApp, Telegram, or "saved from an app"), with the evidence for each.
+- Items saved from apps can go into an album per app, get a searchable caption, or be archived.
+  Nothing changes in Google until you choose, and your own captions are never replaced.
+- Snapchat saves get an estimated save date (shown with its margin), worked out from your own camera
+  photos. New uploads use it; items already in Google change only when you accept it in Fix dates.
+- Dates in file names (WhatsApp, Telegram, screenshots, Pixel) are used for files with no date inside.
+- Fixes: the "Date unknown" album adds new files reliably; local hours start on the hour in zones such
+  as India; searches treat % and _ literally; uploads deleted here are stored again; a reconnecting
+  upload no longer races its retry; thumbnails are written safely in parallel; replacing a Google
+  login removes the old saved copy; malformed requests get a clear error.
+
 ## 1.2.2
 
 - Fix dates: recheck selected or all waiting items, with clearer status views and animated transitions.

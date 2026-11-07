@@ -206,6 +206,19 @@ def test_album_waits_for_the_choice_then_adds_once(dates):
     assert sync.get_settings()["undated"] == {"album": False, "name": "Date unknown", "asked": True}
 
 
+def test_album_adds_new_files_after_older_ones_got_a_date(dates):
+    # One file was added to the album and later got a date of its own; a new undated file must
+    # still be added even though the album already lists as many paths as there are undated files.
+    put("Photos/new.jpg", jpeg(), 1_700_000_000)
+    sync.scan()
+    client = GpmcLike()
+    upload(client, sync.MEDIA / "Photos/new.jpg")
+    sync.update_settings({"undated": {"asked": True}})
+    sync.sq("INSERT INTO undated_album VALUES (?,?,?)", (str(sync.MEDIA / "Photos/old.jpg"), ACC, "Date unknown"))
+    assert sync.undated_album_step(lambda a: client)
+    assert list(client.api.albums.values()) == [("Date unknown", ["KEY1"])]
+
+
 # ---- fixing dates already in Google
 
 

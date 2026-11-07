@@ -8,6 +8,7 @@ import { host } from "../lib/store";
 import { bytes, duration, num, pct, speed } from "../lib/format";
 import { icon } from "../lib/icons";
 import { badge, cardHead } from "../lib/ui";
+import { uploadable, videoName } from "../lib/upload-types";
 import type { View } from "./view";
 
 type ItemState = "waiting" | "uploading" | "retrying" | "saved" | "duplicate" | "failed";
@@ -24,6 +25,8 @@ interface Item {
   preview: string;
   xhr?: XMLHttpRequest;
   cancelled?: boolean;
+  /** Bumped by every attempt, so an older attempt still waiting to reconnect stops by itself. */
+  run: number;
 }
 
 interface PieceResult {
@@ -34,10 +37,6 @@ interface PieceResult {
   error?: string;
 }
 
-const MEDIA = /^(image|video)\//;
-const EXT =
-  /\.(jpe?g|png|gif|webp|heic|heif|avif|bmp|tiff?|dng|cr2|nef|arw|raw|mp4|mov|m4v|3gp|3g2|avi|mkv|webm|mts|m2ts|wmv|mpe?g)$/i;
-const VIDEO = /\.(mp4|mov|m4v|3gp|3g2|avi|mkv|webm|mts|m2ts|wmv|mpe?g)$/i;
 const PARALLEL = 2;
 const MAX_TRIES = 8;
 
@@ -53,12 +52,12 @@ function newId(): string {
   return [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-const isVideo = (f: File) => f.type.startsWith("video") || VIDEO.test(f.name);
+const isVideo = (f: File) => f.type.startsWith("video") || videoName(f.name);
 
 function add(files: FileList | File[]): void {
   let skipped = 0;
   for (const f of files) {
-    if (!MEDIA.test(f.type) && !EXT.test(f.name)) {
+    if (!uploadable(f.name)) {
       skipped++;
       continue;
     }
@@ -73,6 +72,7 @@ function add(files: FileList | File[]): void {
       result: "",
       tries: 0,
       preview: canShow || isVideo(f) ? URL.createObjectURL(f) : "",
+      run: 0,
     });
   }
   if (skipped) toast(`${skipped} file(s) skipped: only photos and videos`, "bad");
@@ -123,6 +123,8 @@ function putPiece(it: Item, offset: number, piece: Blob): Promise<{ status: numb
 }
 
 async function send(it: Item): Promise<void> {
+  const run = ++it.run;
+  const current = () => !it.cancelled && it.run === run;
   it.state = "uploading";
   it.started = it.started || performance.now();
   const chunk = info?.chunk_bytes ?? 8 * 1024 * 1024;
@@ -133,7 +135,7 @@ async function send(it: Item): Promise<void> {
   } catch {
     offset = 0;
   }
-  while (!it.cancelled) {
+  while (current()) {
     try {
       const end = Math.min(offset + chunk, it.file.size);
       const { status, data } = await putPiece(it, offset, it.file.slice(offset, end));
@@ -159,7 +161,7 @@ async function send(it: Item): Promise<void> {
       it.tries = 0;
       if (it.state === "retrying") it.state = "uploading";
     } catch (e) {
-      if (it.cancelled) break;
+      if (!current()) break;
       it.tries++;
       if (it.tries > MAX_TRIES) {
         it.state = "failed";
@@ -177,6 +179,7 @@ async function send(it: Item): Promise<void> {
       }
     }
   }
+  if (it.run !== run) return; // a newer attempt (Try again) owns this file now
   if (it.cancelled) {
     it.state = "failed";
     it.result = "Cancelled";

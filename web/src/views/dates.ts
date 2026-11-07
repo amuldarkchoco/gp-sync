@@ -73,6 +73,8 @@ const SOURCE: Record<DateItem["source"], string> = {
   copy: "the earliest identical copy here",
   file: "the file's time on this server",
   google: "Google Photos (earlier than any copy here)",
+  filename: "the date in the file name",
+  estimated: "the estimated Snapchat save date (see Sources)",
 };
 
 function stateOf(i: DateItem, r: DatesReport): { label: string; tone: Tone; ic: Parameters<typeof icon>[0] } {
@@ -214,7 +216,7 @@ function render(): void {
         <div class="flex flex-wrap items-center gap-3 border-b border-line p-4">
           <div class="min-w-0 flex-1"><h2 class="font-semibold">Files without a date</h2>
             <p class="mt-1 text-xs text-ink-3">${num(r.undated)} files · ${num(r.wrong)} with different dates · ${num(r.waiting)} waiting</p></div>
-          <span class="text-xs text-ink-3">Album: ${r.album ? esc(r.album) : "Off"} · <a class="underline" href="#/settings/albums">Settings</a></span>
+          <span class="text-xs text-ink-3">Album: ${r.album ? esc(r.album) : "Off"} · <a class="underline" href="#/settings/albums">Settings</a> · <a class="underline" href="#/sources">Where they came from</a></span>
         </div>
         ${r.error ? `<p class="border-b border-line px-4 py-3 text-sm text-bad" role="alert">${esc(r.error)}</p>` : ""}
         <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">

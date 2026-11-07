@@ -1,6 +1,7 @@
 """File hashing and thumbnails. No app state here, so it is easy to test."""
 
 import hashlib
+import os
 import threading
 from pathlib import Path
 
@@ -49,6 +50,18 @@ def _enable_heif():
         _heif_ready = True
 
 
+def _save_webp(im, target, quality):
+    """Write atomically. Each writer has its own temp file: the background thumbnailer and a
+    dashboard request can make the same picture at once without corrupting the cached one."""
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        im.save(tmp, "WEBP", quality=quality, method=4)
+        tmp.replace(target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def thumb_path(cache_dir, path, mtime):
     key = hashlib.sha1(f"{path}\0{mtime}".encode()).hexdigest()
     return Path(cache_dir) / key[:2] / f"{key}.webp"
@@ -67,9 +80,7 @@ def make_thumbnail(source, target, size=THUMB_SIZE, quality=72):
         im.thumbnail((size, size))
         if im.mode not in ("RGB", "RGBA"):
             im = im.convert("RGB")
-        tmp = target.with_suffix(".tmp")
-        im.save(tmp, "WEBP", quality=quality, method=4)
-        tmp.replace(target)
+        _save_webp(im, target, quality)
     return target
 
 
@@ -83,9 +94,7 @@ def save_bytes(data, target):
     target.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(io.BytesIO(data)) as im:
         im.thumbnail((THUMB_SIZE, THUMB_SIZE))
-        tmp = target.with_suffix(".tmp")
-        im.convert("RGB").save(tmp, "WEBP", quality=72, method=4)
-        tmp.replace(target)
+        _save_webp(im.convert("RGB"), target, 72)
     return target
 
 

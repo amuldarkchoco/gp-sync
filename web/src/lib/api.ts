@@ -256,6 +256,69 @@ export interface Settings {
   priority?: string[];
   /** Photos and videos with no date of their own go into this album. */
   undated: { album: boolean; name: string; asked: boolean };
+  /** What to do in Google with items saved from apps (Sources page). */
+  sources?: SourceSettings;
+}
+export type SourceId =
+  | "camera"
+  | "snapchat"
+  | "instagram"
+  | "tiktok"
+  | "whatsapp"
+  | "telegram"
+  | "screenshot"
+  | "app_export"
+  | "unknown";
+export type AppSourceId = Exclude<SourceId, "camera" | "unknown">;
+export interface SourceActions {
+  album: boolean;
+  album_name: string;
+  caption: boolean;
+  archive: boolean;
+}
+export type SourceSettings = { asked: boolean; estimate_dates: boolean } & Record<AppSourceId, SourceActions>;
+export interface SourceItem {
+  name: string;
+  kind: "photo" | "video";
+  size: number;
+  mtime: number;
+  /** The label in use: the user's decision, or the detected one. */
+  source: SourceId;
+  detected: SourceId;
+  decided: boolean;
+  app: string;
+  device: string;
+  app_version: string;
+  os_version: string;
+  taken: number | null;
+  /** marker = definite (a record inside the file), name = file name, likely = no camera data. */
+  confidence: "marker" | "name" | "likely" | "";
+  reasons: string[];
+  estimate: { date: number; lo: number; hi: number; reason: string } | null;
+  uploaded: boolean;
+  google_url: string;
+  album: string;
+  archived: boolean;
+  captioned: string;
+}
+export interface SourcesReport {
+  source: SourceId;
+  sources: SourceId[];
+  app_sources: AppSourceId[];
+  labels: Record<SourceId, string>;
+  counts: Record<SourceId, number>;
+  devices: { name: string; files: number }[];
+  checked: number;
+  total: number;
+  estimated: number;
+  items: SourceItem[];
+  more: number;
+  settings: SourceSettings;
+  account: string;
+  refreshed: number | null;
+  refreshing: boolean;
+  needs_library: boolean;
+  error: string;
 }
 export interface DateItem {
   name: string;
@@ -271,8 +334,9 @@ export interface DateItem {
   /** Date it should have. */
   best: number;
   /** manual = picked by the user, copy = earliest identical copy, file = the file's own time,
-   * google = Google already has an earlier (better) date. */
-  source: "manual" | "copy" | "file" | "google";
+   * google = Google already has an earlier (better) date, filename = a date in the file name,
+   * estimated = the estimated save date of a Snapchat item. */
+  source: "manual" | "copy" | "file" | "google" | "filename" | "estimated";
   manual: number | null;
   wrong: boolean;
   fix: "" | "waiting" | "in_google" | "done" | "failed";

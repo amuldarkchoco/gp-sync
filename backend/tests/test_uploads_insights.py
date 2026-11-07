@@ -49,6 +49,7 @@ def test_upload_lands_in_month_folder(server, uploads, monkeypatch):
 def test_upload_found_by_fingerprint_anywhere(server, uploads):
     import hashlib
 
+    (sync.MEDIA / "Photos/old.jpg").write_bytes(b"same")  # still on this server
     sync.q(
         "INSERT INTO files (path,size,mtime,status,attempts,updated,sha1) VALUES (?,?,?,?,0,0,?)",
         (str(sync.MEDIA / "Photos/old.jpg"), 4, 0, "uploaded", hashlib.sha1(b"same").hexdigest()),

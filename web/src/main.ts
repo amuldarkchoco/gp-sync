@@ -22,6 +22,7 @@ import network from "./views/network";
 import overview from "./views/overview";
 import settings from "./views/settings";
 import dates from "./views/dates";
+import sources from "./views/sources";
 import { askUndated } from "./lib/undated";
 import storage from "./views/storage";
 import upload from "./views/upload";
@@ -42,6 +43,7 @@ const ROUTES: Route[] = [
   { id: "storage", title: "Free storage", ic: "cloud", view: storage, group: "Backup" },
   { id: "copy", title: "Copy accounts", ic: "users", view: copyView, group: "Backup" },
   { id: "dates", title: "Fix dates", ic: "clock", view: dates, group: "Backup" },
+  { id: "sources", title: "Sources", ic: "layers", view: sources, group: "Backup" },
   { id: "folders", title: "Folders", ic: "folder", view: folders, group: "Insights" },
   { id: "history", title: "History", ic: "calendar", view: historyView, group: "Insights" },
   { id: "insights", title: "Insights", ic: "chart", view: insights, group: "Insights" },

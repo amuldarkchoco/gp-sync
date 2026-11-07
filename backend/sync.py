@@ -31,6 +31,7 @@ from pathlib import Path
 import cache
 import media
 import notify
+import provenance
 
 HERE = Path(__file__).resolve().parent
 # VERSION sits next to sync.py in the image, one level up (repo root) when run from backend/.
@@ -240,6 +241,19 @@ DEFAULT_SETTINGS = {
     # Photos and videos with no date of their own (Snapchat saves, screenshots, chat pictures).
     # "asked" turns true once the user has seen the choice (first setup, or once after updating).
     "undated": {"album": True, "name": "Date unknown", "asked": False},
+    # Where files came from (Sources page): what to do in Google with items saved from apps.
+    # Nothing happens in Google until "asked" is true (the user has seen the choice).
+    "sources": {
+        "asked": False,
+        "estimate_dates": True,  # give Snapchat saves their estimated date when uploading
+        "snapchat": {"album": True, "album_name": "Snapchat", "caption": True, "archive": False},
+        "instagram": {"album": True, "album_name": "Instagram", "caption": True, "archive": False},
+        "tiktok": {"album": True, "album_name": "TikTok", "caption": True, "archive": False},
+        "whatsapp": {"album": True, "album_name": "WhatsApp", "caption": True, "archive": False},
+        "telegram": {"album": True, "album_name": "Telegram", "caption": True, "archive": False},
+        "screenshot": {"album": False, "album_name": "Screenshots", "caption": False, "archive": False},
+        "app_export": {"album": True, "album_name": "Saved from apps", "caption": False, "archive": False},
+    },
 }
 UNDATED_ALBUM = "Date unknown"
 SECRET_KEYS = ("ntfy_token", "telegram_token")
@@ -265,11 +279,26 @@ def get_settings():
 
 def update_settings(changes):
     """Merge `changes` into the saved settings, after checking the values. Returns the new settings."""
+    if not isinstance(changes, dict):
+        raise ValueError("Settings must be a JSON object")
     cur = get_settings()
     new = _merge(cur, changes)
+    for key in ("notify", "schedule", "undated", "sources"):
+        if not isinstance(new[key], dict):
+            raise ValueError(f"{key} must be a JSON object")
+    src = new["sources"]
+    src["asked"], src["estimate_dates"] = bool(src["asked"]), bool(src["estimate_dates"])
+    for key in provenance.APP_SOURCES:
+        if not isinstance(src[key], dict):
+            raise ValueError(f"sources.{key} must be a JSON object")
+        e = src[key]
+        e["album"], e["caption"], e["archive"] = bool(e["album"]), bool(e["caption"]), bool(e["archive"])
+        default = DEFAULT_SETTINGS["sources"][key]["album_name"]
+        e["album_name"] = " ".join(str(e["album_name"] or "").split())[:80] or default
     n, s = new["notify"], new["schedule"]
+    notify_changes = changes.get("notify") if isinstance(changes.get("notify"), dict) else {}
     for key in SECRET_KEYS:  # empty secret in a change means "keep the saved one"
-        if not (changes.get("notify") or {}).get(key):
+        if not notify_changes.get(key):
             n[key] = cur["notify"][key]
     s["start"], s["end"] = int(s["start"]) % 24, int(s["end"]) % 24
     s["enabled"] = bool(s["enabled"])
@@ -380,12 +409,17 @@ def save_account(auth):
         return None
     email = email_of(auth)
     target = _account_file(email)
-    existed = target.exists()
+    ACCOUNTS_DIR.mkdir(parents=True, exist_ok=True)
+    # The same login may be saved under another file name (older versions): replace it too, or the
+    # stale login could still be the one that is used.
+    others = [f for f in _account_paths().get(email, []) if f != target]
+    existed = target.exists() or bool(others)
     if not existed and len(accounts()) >= MAX_ACCOUNTS:
         raise ValueError(f"Up to {MAX_ACCOUNTS} Google accounts can be connected. Remove one first.")
-    ACCOUNTS_DIR.mkdir(parents=True, exist_ok=True)
     target.write_text(auth)
     target.chmod(0o600)
+    for f in others:
+        f.unlink(missing_ok=True)
     order = _account_order()
     if email not in order:  # replacing a login keeps the account's place
         meta_set("account_order", json.dumps([*order, email]))
@@ -401,6 +435,9 @@ def remove_account(email):
         for f in files:
             f.unlink(missing_ok=True)
         meta_set("account_order", json.dumps([e for e in _account_order() if e != email]))
+        state["login_failed"].discard(email)  # no warning for an account that is gone
+        with _clients_lock:
+            _clients.pop(email, None)
         log(f"Removed Google account {email}", "account")
         return True
     return False
@@ -490,6 +527,13 @@ STATS_SCHEMA = (
     # Files without a date already added to the album for them (per account and album name).
     """CREATE TABLE IF NOT EXISTS undated_album (path TEXT NOT NULL, account TEXT NOT NULL, album TEXT,
        PRIMARY KEY (path, account))""",
+    # Where each file came from (provenance.detect), the user's correction (decision: a source,
+    # or NULL for the detected one), the estimated date of Snapchat saves, and what was done in
+    # Google: album name it was added to, archived, caption written by GP Sync ("-" = it had its own).
+    """CREATE TABLE IF NOT EXISTS provenance (path TEXT PRIMARY KEY, size INTEGER, mtime REAL, source TEXT,
+       app TEXT, device TEXT, app_version TEXT, os_version TEXT, taken REAL, confidence TEXT, reasons TEXT,
+       est_date REAL, est_lo REAL, est_hi REAL, est_reason TEXT, decision TEXT, album TEXT,
+       archived INTEGER, captioned TEXT, error TEXT, updated REAL)""",
 )
 EVENT_DAYS = 90  # activity history kept this long
 LOG_DAYS = 30
@@ -577,6 +621,19 @@ EVENT_KINDS = {
 }
 
 
+def like(text):
+    """`text` for a LIKE ... ESCAPE '\\' pattern, so % and _ match only themselves."""
+    return str(text).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _before(value):
+    """A paging time from the dashboard, or None when it is missing or not a number."""
+    try:
+        return float(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
 def activity(kind="all", query="", before=None, limit=100):
     """Saved activity, newest first. `kind` is all, uploaded, exists, failed or system."""
     where, args = [], []
@@ -584,11 +641,11 @@ def activity(kind="all", query="", before=None, limit=100):
         where.append(f"kind IN ({', '.join('?' * len(EVENT_KINDS[kind]))})")
         args += EVENT_KINDS[kind]
     if query:
-        where.append("text LIKE ?")
-        args.append(f"%{query}%")
-    if before:
+        where.append("text LIKE ? ESCAPE '\\'")
+        args.append(f"%{like(query)}%")
+    if (before := _before(before)) is not None:
         where.append("time < ?")
-        args.append(float(before))
+        args.append(before)
     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
     rows = sq(f"SELECT time, kind, text, name FROM events {sql_where} ORDER BY time DESC LIMIT ?", (*args, int(limit)))
     return {"items": [{"time": t, "kind": k, "text": x, "name": n} for t, k, x, n in rows]}
@@ -738,11 +795,11 @@ def app_logs(level="all", query="", before=None, limit=200):
         where.append("level = ?")
         args.append(level)
     if query:
-        where.append("text LIKE ?")
-        args.append(f"%{query}%")
-    if before:
+        where.append("text LIKE ? ESCAPE '\\'")
+        args.append(f"%{like(query)}%")
+    if (before := _before(before)) is not None:
         where.append("time < ?")
-        args.append(float(before))
+        args.append(before)
     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
     rows = sq(f"SELECT time, level, text FROM logs {sql_where} ORDER BY time DESC LIMIT ?", (*args, int(limit)))
     return {"items": [{"time": t, "level": lv, "text": x} for t, lv, x in rows]}
@@ -1121,7 +1178,10 @@ def next_window(st=None, now=None):
     now = now or time.time()
     if upload_allowed(st, now):
         return now
-    t = (int(now) // 3600 + 1) * 3600
+    # Local hours start on the hour in the viewer's time zone, which is not a UTC hour in zones
+    # such as India (+05:30) or Nepal (+05:45).
+    offset = int(st["tz_offset_min"]) * 60
+    t = ((int(now) + offset) // 3600 + 1) * 3600 - offset
     for _ in range(25):
         if upload_allowed(st, t):
             return t
@@ -1661,6 +1721,9 @@ def upload_all(client, todo, account="", st=None):
                 when = None
                 if date_facts(path, size, mtime) == 0:
                     remember_sha1(path, digest.hex())
+                    # Labelled before upload, so a new Snapchat save gets its estimated date.
+                    if source_facts(path, size, mtime) and estimated_date(path) is None and _is_snap(path):
+                        refresh_estimates()
                     when = best_date(path, size, mtime, digest.hex())[0]
                 # Single-file upload raises on failure; the batch upload() only logs errors.
                 # gpmc is pinned in pyproject.toml, so this internal method stays stable.
@@ -2058,8 +2121,8 @@ def retry_file(name):
 def list_files(query="", status="all", folder="", sort="new", limit=60, offset=0):
     where, args = [], []
     if query:
-        where.append("path LIKE ?")
-        args.append(f"%{query}%")
+        where.append("path LIKE ? ESCAPE '\\'")
+        args.append(f"%{like(query)}%")
     if status in ("uploaded", "exists", "failed"):
         where.append("status=?")
         args.append(status)
@@ -2068,8 +2131,8 @@ def list_files(query="", status="all", folder="", sort="new", limit=60, offset=0
         where.append("path IN (SELECT value FROM json_each(?))")
         args.append(json.dumps(sorted(undated)))
     if folder:
-        where.append("path LIKE ?")
-        args.append(f"{MEDIA}/{folder}/%")
+        where.append("path LIKE ? ESCAPE '\\'")
+        args.append(f"{like(f'{MEDIA}/{folder}/')}%")
     order = {"new": "updated DESC", "old": "updated ASC", "name": "path ASC", "size": "size DESC"}.get(
         sort, "updated DESC"
     )
@@ -2669,7 +2732,7 @@ def reclaim_worker():
         except Exception as e:
             print(f"Free storage: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
             busy = False
-        for step in (datefix_step, undated_album_step):
+        for step in (datefix_step, undated_album_step, sources_step):
             try:
                 busy = step() or busy
             except Exception as e:
@@ -2713,18 +2776,32 @@ def remember_sha1(path, sha1hex):
 
 
 def dates_some(limit=300):
-    """While idle: check which files keep their own date, and fingerprint the ones without one
-    (and same-size files) so identical copies are known. Returns how much was done."""
+    """While idle: check which files keep their own date and where they came from, and fingerprint
+    the ones without a date (and same-size files) so identical copies are known. Only folders that
+    are backed up are looked at. Returns how much was done."""
     known = {p: (s, m) for p, s, m in sq("SELECT path, size, mtime FROM media_dates")}
+    known_src = {p: (s, m) for p, s, m in sq("SELECT path, size, mtime FROM provenance")}
+    backed = backed_folders()
     n = 0
+    sources_changed = False
     for name, _video, size, _added, _backed, mtime in list(state.get("index") or []):
+        if backed is not None and name.split("/", 1)[0] not in backed:
+            continue
         path = str(MEDIA / name)
-        if known.get(path) == (size, mtime):
+        dated, sourced = known.get(path) == (size, mtime), known_src.get(path) == (size, mtime)
+        if dated and sourced:
             continue
         if n >= limit or state["phase"] not in IDLE_PHASES:
-            return n
-        date_facts(path, size, mtime)
-        n += 1
+            break
+        if not dated:
+            date_facts(path, size, mtime)
+            n += 1
+        if not sourced:
+            source_facts(path, size, mtime)
+            sources_changed = True
+            n += 1
+    if sources_changed:
+        refresh_estimates()
     for path, size in sq("SELECT path, size FROM media_dates WHERE inside=0 AND sha1 IS NULL"):
         if n >= limit or state["phase"] not in IDLE_PHASES:
             break
@@ -2769,7 +2846,9 @@ def same_content(path, size, sha1hex, fingerprint=True):
 
 def best_date(path, size, mtime, sha1hex, fingerprint=True):
     """(date to give Google, where it comes from) for a file with no date of its own: a date the
-    user picked ("manual"), the earliest identical copy here ("copy"), or the file's own time ("file")."""
+    user picked ("manual"), a date in the file name ("filename", e.g. WhatsApp's IMG-20240504-WA0001),
+    the estimated save date of a Snapchat item ("estimated"), the earliest identical copy here
+    ("copy"), or the file's own time ("file")."""
     if sha1hex:
         picked = sq(
             "SELECT MIN(manual) FROM media_dates WHERE (path=? OR sha1=?) AND manual IS NOT NULL", (path, sha1hex)
@@ -2778,6 +2857,12 @@ def best_date(path, size, mtime, sha1hex, fingerprint=True):
         picked = sq("SELECT manual FROM media_dates WHERE path=? AND manual IS NOT NULL", (path,))
     if picked and picked[0][0]:
         return float(picked[0][0]), "manual"
+    st = get_settings()
+    named = provenance.name_date(path, st["tz_offset_min"])
+    if named is not None and named <= time.time() + 86400:
+        return named, "filename"
+    if st["sources"]["estimate_dates"] and (est := estimated_date(path)) is not None:
+        return est, "estimated"
     if sha1hex:
         times = [m for m in same_content(path, size, sha1hex, fingerprint).values() if m]
         if times and min(times) < mtime - 1:
@@ -2822,10 +2907,13 @@ def undated_album_step(make_client=None):
     cfg = get_settings()["undated"]
     if not cfg["album"] or not cfg["asked"]:
         return False
-    undated = undated_paths()
-    done = {(p, a) for p, a in sq("SELECT path, account FROM undated_album WHERE album=?", (cfg["name"],))}
-    if not undated or len({p for p, _ in done}) >= len(undated):
+    # Items saved from an app that has an album of its own (Sources) go there instead.
+    undated = undated_paths() - own_album_paths()
+    if not undated:
         return False
+    # Done is per file and account: counting paths alone missed new files when older entries
+    # were no longer undated, and copies in a folder's other accounts.
+    done = {(p, a) for p, a in sq("SELECT path, account FROM undated_album WHERE album=?", (cfg["name"],))}
     rows = q(
         """SELECT path, account, media_key FROM files WHERE status IN ('uploaded','exists') AND media_key != ''
            AND path IN (SELECT value FROM json_each(?))
@@ -2921,7 +3009,7 @@ def dates_report(account):
         if listed and (not key or refreshed > (updated or 0)):
             key = listed[4] or key
         best, source = best_date(path, size, mtime, sha1, fingerprint=False)
-        if source != "manual" and in_google is not None and in_google < best - DATE_SLACK:
+        if source not in ("manual", "filename") and in_google is not None and in_google < best - DATE_SLACK:
             # A file is copied here after it was taken, never before: an earlier date in Google
             # (from the phone's own backup, say) is closer to the truth than our file times.
             best, source = in_google, "google"
@@ -3113,6 +3201,325 @@ def datefix_step(make_client=None):
         finally:
             dates_state["current"] = None
     return did
+
+
+# ---------------------------------------------------------------- where files came from
+# Every backed-up file is labelled by provenance.detect: a camera, Snapchat, a screenshot, another
+# app, or "saved from an app" when no app name survives. Items saved from apps can go into an album
+# per app, get a searchable caption, or be archived (out of the timeline, still in albums and
+# search). Snapchat saves also get an estimated save date. Nothing is done in Google until the user
+# has seen the choice (settings sources.asked).
+
+sources_state = {"error": "", "needs_library": False}
+SOURCE_BATCH = 100
+SOURCE_STEP_LIMIT = 300  # Google calls per step at most; the worker comes back a second later
+_EFFECTIVE = "COALESCE(decision, source)"
+
+
+def source_facts(path, size, mtime):
+    """Detect where a file came from (again when it changed). The user's decision is kept."""
+    rows = sq("SELECT size, mtime FROM provenance WHERE path=?", (path,))
+    if rows and rows[0][0] == size and rows[0][1] == mtime:
+        return False
+    info = provenance.detect(path)
+    sq(
+        """INSERT INTO provenance (path, size, mtime, source, app, device, app_version, os_version, taken,
+                                   confidence, reasons, updated)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime=excluded.mtime, source=excluded.source,
+           app=excluded.app, device=excluded.device, app_version=excluded.app_version,
+           os_version=excluded.os_version, taken=excluded.taken, confidence=excluded.confidence,
+           reasons=excluded.reasons, updated=excluded.updated""",
+        (path, size, mtime, info["source"], info["app"], info["device"], info["app_version"], info["os_version"],
+         info["taken"], info["confidence"], json.dumps(info["reasons"]), time.time()),
+    )  # fmt: skip
+    return True
+
+
+def refresh_estimates():
+    """Place Snapchat saves in time with the camera photos taken on the same iOS versions."""
+    rows = sq("SELECT path, source, device, os_version, taken, app_version, mtime FROM provenance")
+    camera = [(d, o, t) for _p, s, d, o, t, _a, _m in rows if s == provenance.CAMERA and o and t]
+    snaps = [(p, a, d, o, m) for p, s, d, o, _t, a, m in rows if s == "snapchat" and a and o]
+    found = provenance.estimate_snapchat_dates(snaps, camera)
+    with stats_lock:
+        STATS.execute("UPDATE provenance SET est_date=NULL, est_lo=NULL, est_hi=NULL, est_reason=NULL")
+        for path, e in found.items():
+            STATS.execute(
+                "UPDATE provenance SET est_date=?, est_lo=?, est_hi=?, est_reason=? WHERE path=?",
+                (e["date"], e["lo"], e["hi"], e["reason"], path),
+            )
+        STATS.commit()
+    cache.bump()
+    return len(found)
+
+
+def _is_snap(path):
+    return bool(sq(f"SELECT 1 FROM provenance WHERE path=? AND {_EFFECTIVE}='snapchat'", (path,)))
+
+
+def estimated_date(path):
+    """The estimated save date of a file that is (still) labelled Snapchat, or None."""
+    rows = sq(f"SELECT est_date FROM provenance WHERE path=? AND {_EFFECTIVE}='snapchat'", (path,))
+    return float(rows[0][0]) if rows and rows[0][0] else None
+
+
+def own_album_paths():
+    """Files whose app has an album of its own turned on (they skip the "Date unknown" album)."""
+    cfg = get_settings()["sources"]
+    with_album = [s for s in provenance.APP_SOURCES if cfg[s]["album"]]
+    if not cfg["asked"] or not with_album:
+        return set()
+    marks = ",".join("?" * len(with_album))
+    return {p for (p,) in sq(f"SELECT path FROM provenance WHERE {_EFFECTIVE} IN ({marks})", with_album)}
+
+
+def _caption_for(source, est_date=None, est_lo=None, est_hi=None):
+    label = {"app_export": "Saved from an app", "screenshot": "Screenshot"}.get(
+        source, f"Saved from {provenance.LABELS.get(source, source)}"
+    )
+    if est_date:
+        days = max(1, round(((est_hi or est_date) - (est_lo or est_date)) / 2 / 86400))
+        label += f" · around {time.strftime('%-d %b %Y', time.gmtime(est_date))} ± {days} day{'s' * (days != 1)}"
+    return label
+
+
+def _source_targets(cfg):
+    """What should be true in Google for each labelled, uploaded file:
+    {account: [(path, media key, dedup key, album or "", archive, caption or None, row)]}."""
+    rows = sq(
+        f"""SELECT path, {_EFFECTIVE}, album, archived, captioned, est_date, est_lo, est_hi FROM provenance
+            WHERE {_EFFECTIVE} IN ({",".join("?" * len(provenance.APP_SOURCES))})
+            OR archived=1 OR captioned IS NOT NULL OR album IS NOT NULL""",
+        provenance.APP_SOURCES,
+    )
+    if not rows:
+        return {}
+    files = {
+        p: (a, k, h)
+        for p, a, k, h in q(
+            """SELECT path, account, media_key, sha1 FROM files WHERE status IN ('uploaded','exists')
+               AND media_key != '' AND path IN (SELECT value FROM json_each(?))""",
+            (json.dumps([r[0] for r in rows]),),
+        )
+    }
+    accs = dict(accounts())
+    out = collections.defaultdict(list)
+    for path, source, album, archived, captioned, est, lo, hi in rows:
+        if path not in files:
+            continue  # not in Google yet
+        account, key, sha1 = files[path]
+        account = _main_account(account)
+        if account not in accs:
+            continue
+        s = cfg.get(source) if source in provenance.APP_SOURCES else None
+        want_album = s["album_name"] if s and s["album"] else ""
+        want_archive = bool(s and s["archive"])
+        want_caption = _caption_for(source, est, lo, hi) if s and s["caption"] else None
+        dedup = _b64_hash(bytes.fromhex(sha1)) if sha1 else ""
+        out[account].append((path, key, dedup, want_album, want_archive, want_caption, (album, archived, captioned)))
+    return out
+
+
+def sources_step(make_client=None):
+    """Bring Google in line with the Sources settings: albums, archive and captions for items
+    saved from apps, undone when turned off. Returns True if anything was done."""
+    cfg = get_settings()["sources"]
+    if not cfg["asked"]:
+        return False
+    targets = _source_targets(cfg)
+    did, calls = False, 0
+    sources_state["needs_library"] = False
+    for account, items in targets.items():
+        client = None
+
+        def api(account=account):
+            nonlocal client
+            client = client or (make_client or _reclaim_client)(account)
+            return client
+
+        try:
+            # Albums: add to the app's album once (a renamed album gets them again).
+            by_album = collections.defaultdict(list)
+            for path, key, _d, want_album, _a, _c, (album, _ar, _cap) in items:
+                if want_album and album != want_album:
+                    by_album[want_album].append((path, key))
+            for name, todo in by_album.items():
+                for i in range(0, len(todo), SOURCE_BATCH):
+                    if calls >= SOURCE_STEP_LIMIT:
+                        return True
+                    chunk = todo[i : i + SOURCE_BATCH]
+                    calls += 1
+                    if not add_to_album(api(), account, name, [k for _, k in chunk]):
+                        sources_state["error"] = f"Could not add to the album {name}"
+                        break
+                    _set_sources("album", name, [p for p, _ in chunk])
+                    did = True
+            # Archive and unarchive (needs the file's fingerprint, made while idle).
+            for want in (True, False):
+                todo = [
+                    (p, d) for p, _k, d, _al, wa, _c, (_a, ar, _cp) in items if d and wa == want and bool(ar) != want
+                ]
+                for i in range(0, len(todo), SOURCE_BATCH):
+                    if calls >= SOURCE_STEP_LIMIT:
+                        return True
+                    chunk = todo[i : i + SOURCE_BATCH]
+                    calls += 1
+                    api().api.set_archived([d for _, d in chunk], want)
+                    _set_sources("archived", int(want), [p for p, _ in chunk])
+                    did = True
+            # Captions: only where Google has none (or still ours), read from the library list.
+            pending = [it for it in items if it[2] and (it[5] or None) != _ours(it[6][2])]
+            if pending:
+                google = _google_dates(account, [it[2] for it in pending])
+                for path, _k, dedup, _al, _wa, want_caption, (_a, _ar, captioned) in pending:
+                    listed = google.get(dedup)
+                    if listed is None:
+                        sources_state["needs_library"] = True  # unknown whether it has its own caption
+                        continue
+                    current = listed[3] or ""
+                    if current and current != _ours(captioned):
+                        if want_caption and captioned != "-":
+                            _set_sources("captioned", "-", [path])  # the user's own caption stays
+                        elif not want_caption and captioned:
+                            _set_sources("captioned", None, [path])
+                        continue
+                    if calls >= SOURCE_STEP_LIMIT:
+                        return True
+                    calls += 1
+                    api().api.set_item_caption(dedup_key=dedup, caption=want_caption or "")
+                    _set_sources("captioned", want_caption, [path])
+                    did = True
+            sources_state["error"] = ""
+        except Exception as e:
+            msg = outage_kind(e) or f"{type(e).__name__}: {e}"[:300]
+            sources_state["error"] = msg
+            print(f"Sources: {msg}", file=sys.stderr, flush=True)
+            return did
+    if did:
+        notify_change()
+    return did
+
+
+def _ours(captioned):
+    """The caption GP Sync wrote, or None ("-" marks an item that kept its own caption)."""
+    return None if captioned in (None, "-") else captioned
+
+
+def _set_sources(column, value, paths):
+    for i in range(0, len(paths), 500):
+        part = paths[i : i + 500]
+        sq(
+            f"UPDATE provenance SET {column}=? WHERE path IN ({','.join('?' * len(part))})",
+            (value, *part),
+        )
+
+
+def sources_report(source="", limit=600):
+    """Counts per source and device, and the files of one source with the evidence for it."""
+    cfg = get_settings()["sources"]
+    backed = backed_folders()
+    indexed = {
+        str(MEDIA / e[0]): e for e in state.get("index") or [] if backed is None or e[0].split("/", 1)[0] in backed
+    }
+    rows = [
+        r
+        for r in sq(
+            f"""SELECT path, source, decision, {_EFFECTIVE}, app, device, app_version, os_version, taken, confidence,
+                       reasons, est_date, est_lo, est_hi, est_reason, album, archived, captioned FROM provenance"""
+        )
+        if r[0] in indexed
+    ]
+    uploaded = {
+        p: k
+        for p, k in q("SELECT path, media_key FROM files WHERE status IN ('uploaded','exists') AND media_key != ''")
+    }
+    counts = collections.Counter(r[3] for r in rows)
+    devices = collections.Counter(r[5] or "Unknown camera" for r in rows if r[3] == provenance.CAMERA)
+    if source not in provenance.SOURCES:
+        source = next((s for s in provenance.APP_SOURCES if counts.get(s)), "snapchat")
+    picked = [r for r in rows if r[3] == source]
+    picked.sort(key=lambda r: -(r[11] or r[8] or indexed[r[0]][5] or 0))
+    items = []
+    for (path, detected, decision, eff, app, device, app_ver, os_ver, taken, confidence, reasons, est, lo, hi,
+         est_reason, album, archived, captioned) in picked[:limit]:  # fmt: skip
+        e = indexed[path]
+        key = uploaded.get(path, "")
+        items.append(
+            {
+                "name": rel(path),
+                "kind": "video" if e[1] else "photo",
+                "size": e[2],
+                "mtime": int(e[5]),
+                "source": eff,
+                "detected": detected,
+                "decided": decision is not None,
+                "app": app or "",
+                "device": provenance.APPLE_MODELS.get(device or "", device or ""),
+                "app_version": app_ver or "",
+                "os_version": os_ver or "",
+                "taken": taken,
+                "confidence": confidence or "",
+                "reasons": json.loads(reasons or "[]"),
+                "estimate": {"date": est, "lo": lo, "hi": hi, "reason": est_reason or ""} if est else None,
+                "uploaded": bool(key),
+                "google_url": f"https://photos.google.com/photo/{urllib.parse.quote(key, safe='')}" if key else "",
+                "album": album or "",
+                "archived": bool(archived),
+                "captioned": _ours(captioned) or "",
+            }
+        )
+    account = _main_account("")
+    refreshed = meta_get(f"library_refreshed:{account}") if account else None
+    return {
+        "source": source,
+        "sources": list(provenance.SOURCES),
+        "app_sources": list(provenance.APP_SOURCES),
+        "labels": provenance.LABELS,
+        "counts": {s: counts.get(s, 0) for s in provenance.SOURCES},
+        "devices": [{"name": n, "files": c} for n, c in devices.most_common()],
+        "checked": len(rows),
+        "total": len(indexed),
+        "estimated": sum(1 for r in rows if r[3] == "snapchat" and r[11]),
+        "items": items,
+        "more": max(0, len(picked) - limit),
+        "settings": cfg,
+        "account": account,
+        "refreshed": float(refreshed) if refreshed else None,
+        "refreshing": bool(account) and reclaim_state["refreshing"] == account,
+        "needs_library": sources_state["needs_library"],
+        "error": sources_state["error"],
+    }
+
+
+def _source_paths(names):
+    return [str(MEDIA / n) for n in names if clean_folder(n)]
+
+
+def sources_decide(names, source):
+    """Correct the label of files: a source, or "auto" for the detected one."""
+    if source != "auto" and source not in provenance.SOURCES:
+        raise ValueError("unknown source")
+    paths = _source_paths(names)
+    if paths:
+        _set_sources("decision", None if source == "auto" else source, paths)
+        refresh_estimates()
+        reclaim_wake.set()
+    return {"updated": len(paths)}
+
+
+def sources_accept_dates(names):
+    """Use the estimated date for these Snapchat saves: it becomes their picked date, and ones
+    already in Google wait in Fix Dates for the user to delete them there."""
+    accepted = []
+    for path in _source_paths(names):
+        est = estimated_date(path)
+        if est is None:
+            continue
+        if sq("UPDATE media_dates SET manual=? WHERE path=? AND inside=0 RETURNING path", (est, path)):
+            accepted.append(rel(path))
+    fixing = dates_fix(accepted)["queued"] if accepted else 0
+    return {"accepted": len(accepted), "queued": fixing}
 
 
 # ---------------------------------------------------------------- copy between Google accounts
@@ -3551,6 +3958,8 @@ def receive_chunk(stream, length, upload_id, offset, total, name, mtime_ms=None,
     name = clean_name(name)
     if not UPLOAD_ID.fullmatch(upload_id or ""):
         return 400, {"ok": False, "error": "Bad upload id"}
+    if not name or ext(name) not in EXTS:  # every piece: the last one names the saved file
+        return 400, {"ok": False, "error": "Only photos and videos can be uploaded"}
     problem = _check_upload(name, total) if offset == 0 else None
     if problem:
         return problem
@@ -3607,10 +4016,11 @@ def _finish_upload(tmp, name, length, when, sha1_hex, folder=""):
     """Move a fully received file into place, unless the same photo is already here."""
     try:
         target_dir = _upload_folder(when, folder)
-        dup = q("SELECT path FROM files WHERE sha1=? LIMIT 1", (sha1_hex,))
+        # Only a copy still on this server counts: one deleted here must be stored again.
+        dup = next((p for (p,) in q("SELECT path FROM files WHERE sha1=?", (sha1_hex,)) if os.path.isfile(p)), None)
         if dup:
             tmp.unlink()
-            return 200, {"ok": True, "duplicate": rel(dup[0][0]), "name": name}
+            return 200, {"ok": True, "duplicate": rel(dup), "name": name}
         stem, dot, suffix = name.rpartition(".")
         with upload_lock:  # two phones sending IMG_0001.jpg at once must not overwrite each other
             target, n = target_dir / name, 1
@@ -4011,6 +4421,8 @@ class Handler(BaseHTTPRequestHandler):
             self.cached("files:" + json.dumps(args), 60, lambda: list_files(*args))
         elif path == "/api/dates":
             self.json(dates_report(arg("account", "")))
+        elif path == "/api/sources":
+            self.json(sources_report(arg("source", ""), arg("limit", 600, 1, 5000)))
         elif path == "/api/duplicates":
             self.cached("duplicates", 300, duplicates)
         elif path == "/api/activity":
@@ -4120,7 +4532,12 @@ class Handler(BaseHTTPRequestHandler):
                 error = error or "That doesn't look like a login line (it starts with androidId=)"
                 self.json({"ok": bool(email), "email": email, "error": "" if email else error}, 200 if email else 400)
         elif path == "/api/accounts/remove":
-            email = (json.loads(body or "{}")).get("email", "")
+            try:
+                req = json.loads(body or "{}")
+                email = str(req.get("email", ""))
+            except (ValueError, AttributeError):
+                self.json({"ok": False, "error": "bad request"}, 400)
+                return
             self.json({"ok": remove_account(email)})
         elif path == "/api/settings":
             try:
@@ -4243,8 +4660,35 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(404, "{}")
             except (ValueError, TypeError) as e:
                 self.json({"error": str(e)}, 400)
+        elif path.startswith("/api/sources/"):
+            try:
+                req = json.loads(body or "{}")
+                names = [str(n) for n in req.get("paths") or []][:5000]
+            except (ValueError, AttributeError, TypeError):
+                self.json({"error": "bad request"}, 400)
+                return
+            try:
+                if path == "/api/sources/decide":
+                    self.json(sources_decide(names, str(req.get("source", ""))))
+                elif path == "/api/sources/accept-dates":
+                    self.json(sources_accept_dates(names))
+                elif path == "/api/sources/settings":
+                    changes = req.get("settings")
+                    if not isinstance(changes, dict):
+                        raise ValueError("settings must be a JSON object")
+                    new = update_settings({"sources": changes})
+                    reclaim_wake.set()
+                    self.json({"ok": True, "settings": new["sources"]})
+                else:
+                    self.send(404, "{}")
+            except (ValueError, TypeError) as e:
+                self.json({"error": str(e)}, 400)
         elif path == "/api/retry":
-            one = (json.loads(body or "{}") if body.strip().startswith("{") else {}).get("path")
+            try:
+                one = (json.loads(body or "{}") if body.strip().startswith("{") else {}).get("path")
+            except ValueError:
+                self.json({"ok": False, "error": "bad request"}, 400)
+                return
             if one:
                 self.json({"ok": retry_file(one)})
             else:
