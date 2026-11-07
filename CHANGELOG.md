@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.2
+
+- Fix dates: recheck selected or all waiting items, with clearer status views and animated transitions.
+- Show known before-fix dates and distinguish Google-verified dates from upload estimates; keep Google
+  Photos links available when known. Older fixes may not have a recorded before-fix date.
+- Overview: make device and folder switches responsive and preserve the selected view.
+- Folders and devices: distinguish adding files from changing backup priority, and move priority
+  controls below the folder statistics.
+
 ## 1.2.1
 
 - Copy accounts: choose individual photos and videos or copy all items matching your filters.

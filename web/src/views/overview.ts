@@ -1,6 +1,6 @@
 import { get, tz, type FolderReport, type History, type Insights, type Status } from "../lib/api";
 import { donut, heatLegend, heatmap, ring, setRing, sparkline, type Slice } from "../lib/charts";
-import { $, $$, esc, html } from "../lib/dom";
+import { $, $$, animateChange, esc, html } from "../lib/dom";
 import { ago, bytes, clock, duration, fileName, ms, num, pct, speed } from "../lib/format";
 import { icon } from "../lib/icons";
 import { NetChart, rangeButtons, type Range } from "../lib/netchart";
@@ -20,19 +20,27 @@ let share: FolderReport | null = null;
 let shareBy: "devices" | "folders" = "devices";
 let shareMetric: "files" | "bytes" = "files";
 let shareAt = 0;
+let shareRequest = 0;
+let shareError = false;
 let kindsDrawn = false; // the photos/videos donut needs the status, which can come later
 const SLICE_COLORS = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)"];
 const OTHER = "var(--ink-3)";
 
-async function loadShare(): Promise<void> {
+async function loadShare(interactive = false): Promise<void> {
   shareAt = Date.now();
-  let r = await get<FolderReport>(`folders?group=${shareBy}&days=30&tz=${tz}`).catch(() => null);
-  if (r && shareBy === "devices" && !r.children.length) {
-    shareBy = "folders"; // no phone folders: show folders instead
-    r = await get<FolderReport>(`folders?group=folders&days=30&tz=${tz}`).catch(() => null);
+  const mine = ++shareRequest;
+  const by = shareBy;
+  if (interactive) {
+    share = null;
+    shareError = false;
+    renderShare();
   }
+  const r = await get<FolderReport>(`folders?group=${by}&days=30&tz=${tz}`).catch(() => null);
+  if (mine !== shareRequest || by !== shareBy) return;
   share = r;
+  shareError = !r;
   renderShare();
+  if (interactive) animateChange(document.getElementById("ov-share-body"));
 }
 
 function pctText(part: number, whole: number): string {
@@ -113,7 +121,7 @@ function renderShare(): void {
           ${
             groups.length
               ? `<ul>${shown.map((g, i) => legendRow(SLICE_COLORS[i]!, g.name, m(g), total, backed(g), link(g))).join("")}${rest.length ? legendRow(OTHER, `Other (${rest.length})`, restValue, total) : ""}</ul>`
-              : `<p class="py-2 text-sm text-ink-3">${share ? "Nothing here yet" : "Loading…"}</p>`
+              : `<p class="py-2 text-sm text-ink-3">${share ? (shareBy === "devices" ? "No device folders found. Try Folders." : "No folders found.") : shareError ? "Couldn't load this view." : "Loading…"}</p>`
           }</div>
       </div>
       <div class="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
@@ -423,7 +431,7 @@ const overview: View = {
 
       <section class="card lg:col-span-12" data-card="ov-share">
         ${cardHead("Where your photos are", "chart", `<div class="seg" id="ov-share-by"><button data-by="devices">Devices</button><button data-by="folders">Folders</button></div><div class="seg ml-2" id="ov-share-metric"><button data-m="files">Files</button><button data-m="bytes">Size</button></div>`)}
-        <div class="card-b" id="ov-share-body"><div class="skeleton h-44"></div></div>
+        <div class="card-b" id="ov-share-body" aria-live="polite"><div class="skeleton h-44"></div></div>
       </section>
 
       <section class="card flex min-w-0 flex-col lg:col-span-8" data-card="ov-network">
@@ -470,14 +478,17 @@ const overview: View = {
     $("#ov-share-by").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
       if (!b) return;
+      if (shareBy === b.dataset.by) return;
       shareBy = b.dataset.by as "devices" | "folders";
-      void loadShare();
+      void loadShare(true);
     });
     $("#ov-share-metric").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
       if (!b) return;
+      if (shareMetric === b.dataset.m) return;
       shareMetric = b.dataset.m as "files" | "bytes";
       renderShare();
+      animateChange(document.getElementById("ov-share-body"));
     });
     void loadShare();
     chart = new NetChart($("#ov-net"), matchMedia("(max-width: 640px)").matches ? 200 : 300);
@@ -695,6 +706,7 @@ const overview: View = {
   },
   unmount() {
     clearInterval(slowTimer);
+    shareRequest++;
     chart = null;
     document.getElementById("ov-sheet")?.remove();
   },

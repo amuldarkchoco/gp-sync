@@ -101,7 +101,7 @@ function shell(): string {
         <button class="btn icon" id="btn-sync" title="Scan now" aria-label="Scan now">${icon("refresh")}</button>
         <button class="btn icon" id="btn-pause" title="Pause" aria-label="Pause">${icon("pause")}</button>
         <button class="btn icon max-sm:hidden" id="btn-theme" title="Theme" aria-label="Switch theme">${icon("moon")}</button>
-        <a class="btn primary hidden sm:inline-flex" href="#/upload">${icon("upload")}<span>Upload</span></a>
+        <a class="btn primary hidden sm:inline-flex" href="#/upload" aria-label="Add photos and videos from this device" title="Add photos and videos from this device">${icon("upload")}<span>Add files</span></a>
       </header>
       <div id="ptr" aria-hidden="true" style="top:calc(4rem + env(safe-area-inset-top))"><svg viewBox="0 0 40 40"><circle class="ptr-track" cx="20" cy="20" r="11"/><circle class="ptr-arc" cx="20" cy="20" r="11" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100" transform="rotate(-90 20 20)"/></svg></div>
       <main id="view" class="scroll-thin flex-1 overflow-y-auto px-4 pt-4 pb-28 lg:px-6 lg:pt-6 lg:pb-8"></main>
@@ -113,7 +113,7 @@ function shell(): string {
       ${TABS.map((id) => ROUTES.find((r) => r.id === id) as Route)
         .map((r) =>
           r.id === "upload"
-            ? `<a href="#/upload" data-nav="upload" class="tab-fab" aria-label="Upload"><span>${icon("upload", "size-5")}</span></a>`
+            ? `<a href="#/upload" data-nav="upload" class="tab-fab" aria-label="Add photos and videos from this device"><span>${icon("upload", "size-5")}</span></a>`
             : `<a href="#/${r.id}" data-nav="${r.id}" class="tab"><span class="tab-ic">${icon(r.ic, "size-5")}<i class="tab-dot hidden" data-dot="${r.id}"></i></span><span>${r.title}</span></a>`,
         )
         .join("")}

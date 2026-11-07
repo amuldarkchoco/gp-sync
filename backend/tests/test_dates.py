@@ -6,6 +6,7 @@ import inspect
 import io
 import json
 import os
+import sqlite3
 import struct
 import urllib.request
 from pathlib import Path
@@ -243,6 +244,9 @@ def test_fix_round_trip(dates):
 
     client = GpmcLike(google={bytes.fromhex(sha1hex)})
     assert sync.dates_fix(["Photos/b/late.jpg", "Photos/nope.jpg"]) == {"queued": 1}
+    waiting = next(i for i in sync.dates_report(ACC)["items"] if i["name"] == "Photos/b/late.jpg")
+    assert waiting["previous_google"] == 1_700_000_000 + 3 * DAY
+    assert waiting["previous_google_source"] == "google"
     assert not sync.datefix_step(lambda a: client)  # still in Google
     assert client.api.sent == []
 
@@ -256,6 +260,52 @@ def test_fix_round_trip(dates):
     assert sync.sq("SELECT fix, sent FROM media_dates WHERE path=?", (str(late),)) == [("done", 1_700_000_000)]
     fixed = next(i for i in sync.dates_report(ACC)["items"] if i["name"] == "Photos/b/late.jpg")
     assert not fixed["wrong"] and fixed["fix"] == "done"
+    assert fixed["previous_google"] == 1_700_000_000 + 3 * DAY
+    assert fixed["google"] == fixed["best"] == 1_700_000_000
+    assert fixed["google_source"] == "sent"  # not yet verified by a later library refresh
+    assert fixed["google_url"] == "https://photos.google.com/photo/KEY1"
+
+
+def test_date_report_does_not_invent_google_date(dates):
+    p = put("Photos/old.jpg", jpeg(), 1_700_000_000)
+    sha1hex = hashlib.sha1(p.read_bytes()).hexdigest()
+    sync.q(
+        "INSERT INTO files (path, size, mtime, status, media_key, account, sha1, updated) "
+        "VALUES (?,?,?,'uploaded','',?,?,100)",
+        (str(p), p.stat().st_size, p.stat().st_mtime, ACC, sha1hex),
+    )
+    sync.date_facts(str(p), p.stat().st_size, p.stat().st_mtime)
+    sync.meta_set(f"library_refreshed:{ACC}", "0")
+    item = sync.dates_report(ACC)["items"][0]
+    assert item["google"] is None and item["google_source"] == "unknown"
+    assert item["best"] == 1_700_000_000 and not item["google_url"]
+
+    db = sync._library_db(ACC)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    with Storage(db) as st:
+        st.update([library_item(sha1hex, 1_700_000_000 + DAY)])
+    sync.meta_set(f"library_refreshed:{ACC}", "200")
+    item = sync.dates_report(ACC)["items"][0]
+    assert item["google"] == 1_700_000_000 + DAY and item["google_source"] == "google"
+    assert item["best"] == 1_700_000_000 and item["wrong"]
+    assert item["google_url"] == "https://photos.google.com/photo/OLD"
+
+
+def test_old_date_database_migrates_without_losing_rows():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE media_dates (path TEXT PRIMARY KEY, size INTEGER, mtime REAL, sha1 TEXT, inside INTEGER, "
+        "manual REAL, sent REAL, fix TEXT, error TEXT, favorite INTEGER, archived INTEGER, caption TEXT, updated REAL)"
+    )
+    conn.execute("INSERT INTO media_dates (path, fix) VALUES ('photo.jpg', 'done')")
+    sync._create_stats_tables(conn)
+    sync._create_stats_tables(conn)  # safe on the next startup
+    assert conn.execute("SELECT fix, previous_google, previous_google_source FROM media_dates").fetchone() == (
+        "done",
+        None,
+        None,
+    )
+    conn.close()
 
 
 def test_an_earlier_date_in_google_is_kept(dates):
@@ -296,6 +346,78 @@ def test_fix_waits_while_google_still_has_it_in_trash(dates):
     assert not sync.datefix_step(lambda a: TrashClient())
     assert sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(p),)) == [("in_google",)]
     assert sync.dates_cancel(["Photos/t.jpg"]) == {"cancelled": 1}
+
+
+def test_recheck_selected_and_all(dates, server, monkeypatch):
+    other = "other@example.com"
+    monkeypatch.setattr(sync, "accounts", lambda: [(ACC, "auth"), (other, "auth")])
+    paths = [
+        put("Photos/one.jpg", jpeg(color=(200, 30, 30)), 1_700_000_000),
+        put("Photos/two.jpg", jpeg(color=(30, 200, 30)), 1_700_000_000),
+        put("Photos/other.jpg", jpeg(color=(30, 30, 200)), 1_700_000_000),
+    ]
+    for p, account in zip(paths, (ACC, ACC, other), strict=True):
+        digest = hashlib.sha1(p.read_bytes()).hexdigest()
+        sync.q(
+            "INSERT INTO files (path, size, mtime, status, media_key, account, sha1, updated) "
+            "VALUES (?,?,?,'uploaded','OLD',?,?,1)",
+            (str(p), p.stat().st_size, p.stat().st_mtime, account, digest),
+        )
+        sync.date_facts(str(p), p.stat().st_size, p.stat().st_mtime)
+    sync.dates_fix([f"Photos/{p.name}" for p in paths])
+    client = GpmcLike(google={hashlib.sha1(p.read_bytes()).digest() for p in paths})
+    assert not sync.datefix_step(lambda _account: client)
+    assert all(str(p) in sync._dates_checked for p in paths)
+    sync.reclaim_wake.clear()
+
+    # The selected file is checked again immediately; another account and invalid paths are ignored.
+    client.api.google.remove(hashlib.sha1(paths[0].read_bytes()).digest())
+    code, body = post(
+        f"{server}/api/dates/recheck",
+        json.dumps({"account": ACC, "paths": ["Photos/one.jpg", "Photos/other.jpg", "../other.jpg"]}).encode(),
+    )
+    assert code == 200 and json.loads(body) == {"queued": 1}
+    assert sync.reclaim_wake.is_set()
+    assert str(paths[0]) not in sync._dates_checked
+    assert all(str(p) in sync._dates_checked for p in paths[1:])
+    assert sync.datefix_step(lambda _account: client)
+    assert len(client.api.sent) == 1
+    assert sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(paths[0]),)) == [("done",)]
+    assert sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(paths[1]),)) == [("waiting",)]
+
+    # Rechecking all only affects waiting files owned by this account, and won't upload one Google still has.
+    code, body = post(f"{server}/api/dates/recheck", json.dumps({"account": ACC, "all": True}).encode())
+    assert code == 200 and json.loads(body) == {"queued": 1}
+    assert str(paths[1]) not in sync._dates_checked and str(paths[2]) in sync._dates_checked
+    assert not sync.datefix_step(lambda _account: client)
+    assert len(client.api.sent) == 1
+    code, _ = post(f"{server}/api/dates/recheck", json.dumps({"account": "unknown", "all": True}).encode())
+    assert code == 400
+
+
+def test_recheck_still_respects_google_trash(dates):
+    p = put("Photos/trash.jpg", jpeg(), 1_700_000_000)
+    digest = hashlib.sha1(p.read_bytes()).hexdigest()
+    sync.q(
+        "INSERT INTO files (path, size, mtime, status, media_key, account, sha1, updated) "
+        "VALUES (?,?,?,'uploaded','OLD',?,?,1)",
+        (str(p), p.stat().st_size, p.stat().st_mtime, ACC, digest),
+    )
+    sync.date_facts(str(p), p.stat().st_size, p.stat().st_mtime)
+    sync.dates_fix(["Photos/trash.jpg"])
+
+    class TrashClient(GpmcLike):
+        def _upload_file(self, file_path, *a, progress_callback=None, **k):
+            progress_callback({"phase": "skipped"})
+            return {str(file_path): "OLD"}
+
+    client = TrashClient()
+    assert not sync.datefix_step(lambda _account: client)
+    assert sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(p),)) == [("in_google",)]
+    assert sync.dates_recheck(ACC, ["Photos/trash.jpg"]) == {"queued": 1}
+    assert not sync.datefix_step(lambda _account: client)
+    assert sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(p),)) == [("in_google",)]
+    assert not client.api.sent
 
 
 def test_library_filter_and_api(dates, server):

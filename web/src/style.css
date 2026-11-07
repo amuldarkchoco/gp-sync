@@ -916,6 +916,26 @@ body::before {
   }
 }
 
+@keyframes content-flip {
+  from {
+    opacity: 0.35;
+    transform: perspective(900px) rotateX(-3deg) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(900px) rotateX(0) translateY(0);
+  }
+}
+.content-swap {
+  transform-origin: top center;
+  animation: content-flip 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .content-swap {
+    animation: none;
+  }
+}
+
 /* Charts */
 .chart-line {
   filter: drop-shadow(0 4px 10px color-mix(in oklab, currentColor 45%, transparent));

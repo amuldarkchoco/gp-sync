@@ -263,6 +263,11 @@ export interface DateItem {
   size: number;
   /** Date Google Photos shows (unix seconds), null when unknown. */
   google: number | null;
+  /** Whether Google supplied this date, or it is only the last value sent during upload. */
+  google_source: "google" | "sent" | "unknown";
+  /** Last known date when this fix was started; older fixes may not have recorded one. */
+  previous_google: number | null;
+  previous_google_source: "google" | "sent" | "unknown";
   /** Date it should have. */
   best: number;
   /** manual = picked by the user, copy = earliest identical copy, file = the file's own time,

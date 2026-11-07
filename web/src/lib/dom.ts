@@ -29,6 +29,15 @@ export function text(el: Element, value: string): void {
   if (el.textContent !== value) el.textContent = value;
 }
 
+/** Give a user-initiated filter change visible feedback without animating background refreshes. */
+export function animateChange(el: HTMLElement | null): void {
+  if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  el.classList.remove("content-swap");
+  void el.offsetWidth;
+  el.classList.add("content-swap");
+  el.addEventListener("animationend", () => el.classList.remove("content-swap"), { once: true });
+}
+
 let toastTimer = 0;
 const TOAST_ICONS = {
   good: '<path d="M20 6 9 17l-5-5"/>',

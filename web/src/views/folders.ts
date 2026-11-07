@@ -8,6 +8,7 @@ import {
   type Settings,
 } from "../lib/api";
 import { sparkline } from "../lib/charts";
+import { backupPriorityControl } from "../lib/backup-priority";
 import { $, $$, esc, html, toast } from "../lib/dom";
 import { ago, bytes, date, fileName, num, pct } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
@@ -79,7 +80,7 @@ function prioName(p: string): string {
 
 function prioBadge(p: string): string {
   const i = prio.indexOf(p);
-  return i < 0 ? "" : badge(`#${i + 1} first`, "good", "up");
+  return i < 0 ? "" : badge(`Priority #${i + 1}`, "good", "up");
 }
 
 function renderPrio(): void {
@@ -90,7 +91,7 @@ function renderPrio(): void {
   if (!show) return;
   html(
     card,
-    `${cardHead("Upload order", "up", `<span class="text-xs text-ink-3">These go to Google first</span>`)}
+    `${cardHead("Backup priority", "up", `<span class="text-xs text-ink-3">Preferred folders in the backup queue</span>`)}
      <ol class="divide-y divide-line">${prio
        .map(
          (p, i) => `<li class="flex items-center gap-3 px-4 py-2.5">
@@ -237,8 +238,7 @@ function renderSummary(r: FolderReport): void {
     `<div class="flex flex-wrap items-center gap-x-3 gap-y-1"><span class="truncate text-base font-semibold">${esc(title)}</span>
        <span class="text-xs text-ink-3">${num(t.files)} files · ${bytes(t.bytes)}</span>
        ${path ? prioBadge(path) : ""}
-       <span class="ml-auto text-xs text-ink-3 tabular-nums">${done}% in Google Photos</span>
-       ${path && t.files > t.synced ? `<button class="btn sm ${prio.includes(path) ? "" : "primary"}" data-prio-toggle="${esc(path)}">${icon(prio.includes(path) ? "x" : "up")}${prio.includes(path) ? "Usual order" : "Upload first"}</button>` : ""}</div>
+       <span class="ml-auto text-xs text-ink-3 tabular-nums">${done}% in Google Photos</span></div>
      <div class="bar mt-2"><i style="width:${done}%"></i></div>
      <div class="mt-4 grid grid-cols-3 gap-4 lg:grid-cols-6">
        ${stat("Photos", num(t.photos), bytes(t.photo_bytes))}
@@ -247,7 +247,8 @@ function renderSummary(r: FolderReport): void {
        ${stat(`New in ${RANGES.find(([d]) => d === days)?.[1] ?? `${days} d`}`, num(t.new), `${num(t.new_week)} this week`)}
        ${stat("Today", num(t.new_day), "added")}
        ${stat("Last added", t.last_added ? ago(t.last_added) : "–", t.last_added ? date(t.last_added, true) : "Nothing yet")}
-     </div>`,
+     </div>
+     ${path && (t.files > t.synced || prio.includes(path)) ? backupPriorityControl(path, prio.indexOf(path), t.files > t.synced) : ""}`,
   );
 }
 
@@ -596,17 +597,19 @@ const folders: View = {
       e.preventDefault();
       if (b.dataset.prioToggle) {
         const p = b.dataset.prioToggle;
+        const focused = document.activeElement === b;
         if (prio.includes(p))
           void savePrio(
             prio.filter((x) => x !== p),
-            `${prioName(p)} is back in the usual order`,
+            `Backup priority removed for ${prioName(p)}`,
           );
-        else void savePrio([...prio, p].slice(-10), `${prioName(p)} uploads first`);
+        else void savePrio([...prio, p].slice(-10), `Backup priority set for ${prioName(p)}`);
+        if (focused) document.querySelector<HTMLButtonElement>("#fo-summary [data-prio-toggle]")?.focus();
       } else if (b.dataset.prioRemove) {
         const p = b.dataset.prioRemove;
         void savePrio(
           prio.filter((x) => x !== p),
-          `${prioName(p)} is back in the usual order`,
+          `Backup priority removed for ${prioName(p)}`,
         );
       } else if (b.dataset.prioMove) {
         const i = prio.indexOf(b.dataset.prioMove);
@@ -614,7 +617,7 @@ const folders: View = {
         if (i < 0 || j < 0 || j >= prio.length) return;
         const next = [...prio];
         [next[i], next[j]] = [next[j]!, next[i]!];
-        void savePrio(next, "Upload order saved");
+        void savePrio(next, "Backup priority order saved");
       }
     });
     const card = $("#fo-files-card");

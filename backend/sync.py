@@ -486,7 +486,7 @@ STATS_SCHEMA = (
     # the user picked, the date sent to Google, and the "fix the date in Google" job for it.
     """CREATE TABLE IF NOT EXISTS media_dates (path TEXT PRIMARY KEY, size INTEGER, mtime REAL, sha1 TEXT,
        inside INTEGER, manual REAL, sent REAL, fix TEXT, error TEXT, favorite INTEGER, archived INTEGER,
-       caption TEXT, updated REAL)""",
+       caption TEXT, updated REAL, previous_google REAL, previous_google_source TEXT)""",
     # Files without a date already added to the album for them (per account and album name).
     """CREATE TABLE IF NOT EXISTS undated_album (path TEXT NOT NULL, account TEXT NOT NULL, album TEXT,
        PRIMARY KEY (path, account))""",
@@ -528,6 +528,10 @@ def _create_stats_tables(conn):
     for col in STAT_COLUMNS:
         if col not in have:  # columns added by newer versions
             conn.execute(f"ALTER TABLE hourly ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+    date_cols = {row[1] for row in conn.execute("PRAGMA table_info(media_dates)").fetchall()}
+    for col, kind in (("previous_google", "REAL"), ("previous_google_source", "TEXT")):
+        if col not in date_cols:
+            conn.execute(f"ALTER TABLE media_dates ADD COLUMN {col} {kind}")
     conn.commit()
 
 
@@ -2657,6 +2661,7 @@ def reclaim_worker():
     with contextlib.suppress(Exception):  # reset work cut short by a restart
         q("UPDATE reclaim SET state='queued' WHERE state='downloading'")
     while True:
+        reclaim_wake.clear()
         try:
             while _refresh_requests:
                 refresh_library(_refresh_requests.popleft())
@@ -2670,7 +2675,6 @@ def reclaim_worker():
             except Exception as e:
                 print(f"Dates: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         reclaim_wake.wait(1 if busy else 120)
-        reclaim_wake.clear()
 
 
 # ---------------------------------------------------------------- dates
@@ -2685,6 +2689,7 @@ DATE_SLACK = 120  # seconds Google's date may be off before we call it wrong
 SAME_SIZE_HASHES = 50  # at most this many same-size files are fingerprinted to find copies of one file
 dates_state = {"current": None, "error": ""}
 _dates_checked = {}  # path -> when Google was last asked whether the user deleted it
+_dates_checked_lock = threading.Lock()
 
 
 def date_facts(path, size, mtime):
@@ -2855,13 +2860,25 @@ def _google_dates(account, dedups):
         part = keys[i : i + 500]
         rows = _library_rows(
             account,
-            f"""SELECT dedup_key, utc_timestamp, is_favorite, is_archived, caption FROM remote_media
-                WHERE dedup_key IN ({",".join("?" * len(part))}) AND COALESCE(trash_timestamp, 0) = 0""",
+            f"""SELECT dedup_key, utc_timestamp, is_favorite, is_archived, caption, media_key FROM remote_media
+                WHERE dedup_key IN ({",".join("?" * len(part))}) AND COALESCE(trash_timestamp, 0) = 0
+                ORDER BY is_canonical""",
             part,
         )
-        for dedup, ts, fav, arch, cap in rows or []:
-            out[dedup] = (_seconds(ts), fav, arch, cap)
+        for dedup, ts, fav, arch, cap, key in rows or []:
+            out[dedup] = (_seconds(ts), fav, arch, cap, key)
     return out
+
+
+def _known_google_date(listed, refreshed, updated, status_, sent):
+    """Return the date and evidence; an old file mtime alone is not a known Google date."""
+    if listed and refreshed > (updated or 0):
+        return listed[0], "google"
+    if status_ == "uploaded" and sent is not None:
+        return float(sent), "sent"
+    if status_ == "exists" and listed:
+        return listed[0], "google"
+    return None, "unknown"
 
 
 def dates_report(account):
@@ -2869,7 +2886,13 @@ def dates_report(account):
     and the progress of fixing them."""
     account = account or _main_account("")
     refreshed = float(meta_get(f"library_refreshed:{account}") or 0)
-    facts = {p: r for p, *r in sq("SELECT path, sha1, manual, sent, fix, error FROM media_dates WHERE inside=0")}
+    facts = {
+        p: r
+        for p, *r in sq(
+            "SELECT path, sha1, manual, sent, fix, error, previous_google, previous_google_source "
+            "FROM media_dates WHERE inside=0"
+        )
+    }
     first = _main_account("")
     rows = [
         r
@@ -2892,14 +2915,11 @@ def dates_report(account):
         if sha1 and sha1 in seen:
             continue
         seen.add(sha1)
-        _, manual, sent, fix, error = facts[path]
+        _, manual, sent, fix, error, previous_google, previous_source = facts[path]
         listed = google.get(_b64_hash(bytes.fromhex(sha1))) if sha1 else None
-        if listed and refreshed > (updated or 0):
-            in_google = listed[0]  # Google's own list, read after this file was uploaded
-        elif status_ == "uploaded":
-            in_google = float(sent or int(mtime))  # what GP Sync sent
-        else:
-            in_google = listed[0] if listed else None  # already there: someone else uploaded it
+        in_google, google_source = _known_google_date(listed, refreshed, updated, status_, sent)
+        if listed and (not key or refreshed > (updated or 0)):
+            key = listed[4] or key
         best, source = best_date(path, size, mtime, sha1, fingerprint=False)
         if source != "manual" and in_google is not None and in_google < best - DATE_SLACK:
             # A file is copied here after it was taken, never before: an earlier date in Google
@@ -2911,13 +2931,18 @@ def dates_report(account):
                 "kind": "video" if ext(path) in VIDEO_EXTS else "photo",
                 "size": size,
                 "google": in_google,
+                "google_source": google_source,
+                "previous_google": previous_google,
+                "previous_google_source": previous_source or "unknown",
                 "best": best,
                 "source": source,
                 "manual": manual,
                 "wrong": in_google is not None and abs(in_google - best) > DATE_SLACK,
                 "fix": fix or "",
                 "error": error or "",
-                "google_url": f"https://photos.google.com/photo/{key}" if key else "",
+                "google_url": (
+                    f"https://photos.google.com/photo/{urllib.parse.quote(str(key), safe='')}" if key else ""
+                ),
             }
         )
     order = {"waiting": 0, "in_google": 0, "failed": 1}
@@ -2968,7 +2993,7 @@ def dates_fix(names):
         path = _date_target(name)
         if not path:
             continue
-        sha1, account = q("SELECT sha1, account FROM files WHERE path=?", (path,))[0]
+        sha1, account, status_, updated = q("SELECT sha1, account, status, updated FROM files WHERE path=?", (path,))[0]
         sha1 = sha1 or (sq("SELECT sha1 FROM media_dates WHERE path=?", (path,)) or [[None]])[0][0]
         if not sha1:
             sha1 = media.sha1_file(path).hex()
@@ -2977,13 +3002,22 @@ def dates_fix(names):
         found = _google_dates(_main_account(account), [_b64_hash(bytes.fromhex(sha1))]).get(
             _b64_hash(bytes.fromhex(sha1))
         )
-        _, fav, arch, cap = found or (0, 0, 0, "")
+        _, fav, arch, cap, _key = found or (0, 0, 0, "", "")
+        sent, fix, previous, previous_source = sq(
+            "SELECT sent, fix, previous_google, previous_google_source FROM media_dates WHERE path=?", (path,)
+        )[0]
+        refreshed = float(meta_get(f"library_refreshed:{_main_account(account)}") or 0)
+        before, before_source = _known_google_date(found, refreshed, updated, status_, sent)
+        if fix in ("waiting", "in_google", "failed"):
+            before, before_source = previous, previous_source
         sq(
-            """UPDATE media_dates SET fix='waiting', error='', sha1=?, favorite=?, archived=?, caption=?
+            """UPDATE media_dates SET fix='waiting', error='', sha1=?, favorite=?, archived=?, caption=?,
+               previous_google=?, previous_google_source=?
                WHERE path=?""",
-            (sha1, int(bool(fav)), int(bool(arch)), cap or "", path),
+            (sha1, int(bool(fav)), int(bool(arch)), cap or "", before, before_source, path),
         )
-        _dates_checked.pop(path, None)
+        with _dates_checked_lock:
+            _dates_checked.pop(path, None)
         n += 1
     reclaim_wake.set()
     return {"queued": n}
@@ -2999,6 +3033,28 @@ def dates_cancel(names):
     return {"cancelled": n}
 
 
+def dates_recheck(account, names=None):
+    """Request an immediate check of selected waiting files, or all waiting files for an account."""
+    if account not in dict(accounts()):
+        raise ValueError("unknown account")
+    waiting = {p for (p,) in sq("SELECT path FROM media_dates WHERE fix IN ('waiting','in_google')")}
+    if names is not None:
+        waiting &= {str(MEDIA / name) for name in names if clean_folder(name)}
+    rows = q(
+        """SELECT path, account FROM files WHERE status IN ('uploaded','exists')
+           AND path IN (SELECT value FROM json_each(?))""",
+        (json.dumps(sorted(waiting)),),
+    )
+    first = _main_account("")
+    paths = [path for path, owner in rows if (owner or first) == account]
+    with _dates_checked_lock:
+        for path in paths:
+            _dates_checked.pop(path, None)
+    if paths:
+        reclaim_wake.set()
+    return {"queued": len(paths)}
+
+
 def _set_fix(path, fix, error=""):
     sq("UPDATE media_dates SET fix=?, error=? WHERE path=?", (fix, error, path))
     notify_change()
@@ -3012,9 +3068,10 @@ def datefix_step(make_client=None):
     now = time.time()
     did = False
     for path, sha1, fav, arch, cap in rows:
-        if now - _dates_checked.get(path, 0) < 100:
-            continue
-        _dates_checked[path] = now
+        with _dates_checked_lock:
+            if now - _dates_checked.get(path, 0) < 100:
+                continue
+            _dates_checked[path] = now
         found = q("SELECT size, mtime, account FROM files WHERE path=? AND status IN ('uploaded','exists')", (path,))
         if not found or not sha1:
             _set_fix(path, "failed", "This file isn't on the server any more")
@@ -4159,7 +4216,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/dates/"):
             try:
                 req = json.loads(body or "{}")
-                names = [str(n) for n in req.get("paths") or []][:1000]
+                names = [str(n) for n in req.get("paths") or []]
+                if path != "/api/dates/recheck":
+                    names = names[:1000]
             except (ValueError, AttributeError):
                 self.json({"error": "bad request"}, 400)
                 return
@@ -4168,6 +4227,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.json(dates_fix(names))
                 elif path == "/api/dates/cancel":
                     self.json(dates_cancel(names))
+                elif path == "/api/dates/recheck":
+                    account = str(req.get("account", "")) or _main_account("")
+                    self.json(dates_recheck(account, None if req.get("all") is True else names))
                 elif path == "/api/dates/set":
                     self.json(dates_set(str(req.get("path", "")), req.get("when")))
                 elif path == "/api/dates/refresh":
