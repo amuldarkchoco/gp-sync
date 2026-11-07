@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.1
+
+- Copy accounts: choose individual photos and videos or copy all items matching your filters.
+  Duplicates are skipped; copying albums is not available with the connected Google login.
+- Folders and devices: track daily photo and video arrivals and see which are waiting, backed up
+  or failed. Arrival dates are estimates based on filesystem timestamps.
+- Refreshed the dashboard with layered glass surfaces, dimensional details, updated navigation
+  and clearer overview metrics in both light and dark themes.
+- Made the weekly-summary scheduling test independent of the current date.
+
 ## 1.2.0
 
 - Uploads per day and the streak refresh as soon as new files upload (they waited up to

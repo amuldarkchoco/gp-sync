@@ -88,15 +88,17 @@ Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
 - **Files:** search and filter everything that was backed up, with thumbnails (iPhone HEIC too) and
   a link to each item in Google Photos. A duplicates tab lists identical files.
 - **Folders and devices:** photos, videos, size and backup progress for any folder, or per phone
-  (the folders phone backup apps make), with a chart of what was added each day.
+  (the folders phone backup apps make), with daily arrivals and their waiting, backed-up and failed
+  counts. Arrival dates are inferred from filesystem timestamps, which can change.
 - **Free storage:** lists what counts against your Google storage, biggest first. One at a time,
   GP Sync downloads an item and checks it is Google's original, you delete it in Google Photos,
   and GP Sync uploads it again the free way and checks it no longer counts. GP Sync never
   deletes anything in Google. Albums and shared links are not kept. This relies on the same
   free upload as all GP Sync uploads, which Google could stop honouring.
-- **Copy accounts:** copy everything one connected Google account owns to another (only what
-  the other doesn't have), in original quality with dates, favourites, archive and captions.
-  Nothing is deleted in either account. Albums and people names don't come over.
+- **Copy accounts:** choose individual photos and videos, or copy everything matching a type and
+  year range, from one connected Google account to another (only what the other doesn't have), in
+  original quality with dates, favourites, archive and captions. Nothing is deleted in either
+  account. Albums and people names don't come over: the connected login cannot list source albums.
 - **History:** a contribution graph (like GitHub's) of photos, videos, data uploaded or network
   traffic per day, with day details, streaks and 30-day charts.
 - **Alerts:** ntfy or Telegram messages when Google rejects a login, a file fails 5 times or a

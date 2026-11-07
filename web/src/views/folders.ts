@@ -31,6 +31,7 @@ let path = "";
 let days = 30;
 let report: FolderReport | null = null;
 let request = 0;
+let refreshTimer = 0;
 
 // the photos and videos of the open folder
 let files: FolderFiles | null = null;
@@ -38,6 +39,7 @@ let shownFiles: FolderFiles["items"] = [];
 let fStatus = "all";
 let fKind = "all";
 let fSort = "new";
+let fDay = "";
 let fRequest = 0;
 let fLoading = false;
 let observer: IntersectionObserver | null = null;
@@ -162,7 +164,7 @@ async function loadFiles(reset: boolean): Promise<void> {
   const offset = reset ? 0 : shownFiles.length;
   try {
     const r = await get<FolderFiles>(
-      `folders/files?path=${encodeURIComponent(path)}&status=${fStatus}&kind=${fKind}&sort=${fSort}&offset=${offset}&limit=60`,
+      `folders/files?path=${encodeURIComponent(path)}&group=${group}&status=${fStatus}&kind=${fKind}&sort=${fSort}&offset=${offset}&limit=60&day=${encodeURIComponent(fDay)}&tz=${tz}`,
     );
     if (mine !== fRequest) return;
     files = r;
@@ -424,6 +426,9 @@ function renderChart(r: FolderReport): void {
         day: chunk[0]!.day,
         photos: chunk.reduce((a, d) => a + d.photos, 0),
         videos: chunk.reduce((a, d) => a + d.videos, 0),
+        backed_up: chunk.reduce((a, d) => a + d.backed_up, 0),
+        waiting: chunk.reduce((a, d) => a + d.waiting, 0),
+        failed: chunk.reduce((a, d) => a + d.failed, 0),
       });
     }
     rows = weeks;
@@ -443,7 +448,7 @@ function renderChart(r: FolderReport): void {
       : `<div class="cols flex h-20 items-end gap-[3px] sm:h-28">${rows
           .map((d) => {
             const head = days > 90 ? `Week of ${nice(d.day)}` : nice(d.day, true);
-            const tip = `${head}\nPhotos: ${num(d.photos)}\nVideos: ${num(d.videos)}`;
+            const tip = `${head}\nPhotos: ${num(d.photos)}\nVideos: ${num(d.videos)}\nIn Google: ${num(d.backed_up)}\nWaiting: ${num(d.waiting)}\nFailed: ${num(d.failed)}`;
             return `<div class="col flex h-full flex-1 flex-col justify-end gap-[2px]" data-tip="${esc(tip)}">
               ${d.videos ? `<div class="col-bar rounded-t-[4px] bg-s2" style="height:${(d.videos / max) * 100}%"></div>` : ""}
               ${d.photos ? `<div class="col-bar ${d.videos ? "" : "rounded-t-[4px]"} bg-s1" style="height:${(d.photos / max) * 100}%"></div>` : ""}
@@ -456,6 +461,23 @@ function renderChart(r: FolderReport): void {
               `<div class="flex-1 text-center whitespace-nowrap">${(rows.length - 1 - i) % every === 0 ? esc(nice(d.day)) : ""}</div>`,
           )
           .join("")}</div>`,
+  );
+  const recent = r.daily.slice(-7).reverse();
+  html(
+    $("#fo-daily"),
+    `<div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-sm font-medium">Daily arrivals</div><p class="text-xs text-ink-3">Based on filesystem timestamps, which can change when files are modified. Status is from the latest scan.</p></div>
+      <label class="text-xs text-ink-3">View a day <input class="input ml-1 w-auto" type="date" id="fo-day" value="${esc(fDay)}" min="${r.daily[0]?.day ?? ""}" max="${r.today}"></label></div>
+     <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">${recent
+       .map(
+         (d) =>
+           `<button class="rounded-xl border p-3 text-left ${fDay === d.day ? "border-accent bg-accent/10" : "border-line bg-panel-2"}" data-day="${d.day}" aria-pressed="${fDay === d.day}">
+         <span class="block text-sm font-medium">${esc(nice(d.day, true))}</span>
+         <span class="mt-1 block text-xs text-ink-2">${num(d.photos)} photos · ${num(d.videos)} videos</span>
+         <span class="mt-1 block text-xs text-ink-3">${num(d.waiting)} waiting · ${num(d.backed_up)} in Google${d.failed ? ` · ${num(d.failed)} failed` : ""}</span>
+       </button>`,
+       )
+       .join("")}</div>
+     ${fDay ? `<button class="btn sm mt-3" id="fo-clear-day">${icon("x")}Show all days</button>` : ""}`,
   );
 }
 
@@ -493,7 +515,9 @@ function skeleton(): void {
 }
 
 function filesSub(): string {
+  if (fDay) return `Added ${fDay} · including folders inside`;
   if (path) return "Including the folders inside";
+  if (group === "devices") return "Newest first, from every device";
   return "Newest first, from every backed-up folder";
 }
 
@@ -502,6 +526,7 @@ function open(): void {
   shownFiles = [];
   fStatus = "all";
   fKind = "all";
+  fDay = "";
   observer?.disconnect();
   skeleton();
   renderBar();
@@ -526,6 +551,7 @@ const folders: View = {
       <div class="border-t border-line">
         ${cardHead("Added per day", "chart", `<span class="hidden items-center gap-3 sm:flex"><span class="flex items-center gap-1.5"><i class="size-2 rounded-full bg-s1"></i>Photos</span><span class="flex items-center gap-1.5"><i class="size-2 rounded-full bg-s2"></i>Videos</span></span><div class="seg ml-2" id="fo-range">${RANGES.map(([d, l]) => `<button data-d="${d}" class="max-sm:px-2.5">${l}</button>`).join("")}</div>`)}
         <div class="card-b" id="fo-chart"></div>
+        <div class="border-t border-line p-4" id="fo-daily"></div>
       </div>
     </section>
     <section class="card mb-4 hidden overflow-hidden" id="fo-prio-card"></section>
@@ -539,6 +565,14 @@ const folders: View = {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
       if (b) location.hash = b.dataset.g === "devices" ? "#/folders" : "#/folders/f";
     });
+    el.addEventListener("change", (e) => {
+      const target = e.target as HTMLInputElement;
+      if (target.id !== "fo-day") return;
+      fDay = target.value;
+      html($("#fo-files-sub"), filesSub());
+      if (report) renderChart(report);
+      void loadFiles(true);
+    });
     $("#fo-range").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
       if (!b) return;
@@ -546,6 +580,15 @@ const folders: View = {
       void load();
     });
     el.addEventListener("click", (e) => {
+      const dayButton = (e.target as HTMLElement).closest<HTMLElement>("[data-day], #fo-clear-day");
+      if (dayButton) {
+        fDay = dayButton.dataset.day === fDay ? "" : (dayButton.dataset.day ?? "");
+        html($("#fo-files-sub"), filesSub());
+        if (report) renderChart(report);
+        void loadFiles(true);
+        document.getElementById("fo-files-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
       const b = (e.target as HTMLElement).closest<HTMLElement>(
         "[data-prio-toggle], [data-prio-move], [data-prio-remove]",
       );
@@ -595,6 +638,7 @@ const folders: View = {
       }
     });
     open();
+    refreshTimer = window.setInterval(() => void load(), 30000);
   },
   route(args) {
     parse(args);
@@ -602,6 +646,7 @@ const folders: View = {
     document.getElementById("view")?.scrollTo({ top: 0 });
   },
   unmount() {
+    clearInterval(refreshTimer);
     request++;
     fRequest++;
     observer?.disconnect();

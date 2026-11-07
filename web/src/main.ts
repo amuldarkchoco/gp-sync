@@ -64,10 +64,10 @@ function shell(): string {
   const groups = [...new Set(ROUTES.map((r) => r.group))];
   return `
   <div class="flex h-dvh overflow-hidden">
-    <aside class="hidden w-64 shrink-0 flex-col border-r border-line bg-bg/40 backdrop-blur-xl lg:flex">
-      <a href="#/overview" class="flex items-center gap-3 px-5 pt-5 pb-4">
-        <img src="icon.svg" alt="" class="size-10 rounded-xl shadow-lg">
-        <div class="min-w-0"><div class="truncate text-[15px] font-semibold">GP Sync</div><div class="text-xs text-ink-3" id="side-version"></div></div>
+    <aside class="app-sidebar hidden w-64 shrink-0 flex-col border-r border-line lg:flex">
+      <a href="#/overview" class="flex items-center gap-3 px-5 pt-6 pb-5">
+        <img src="icon.svg" alt="" class="brand-icon size-11 rounded-[14px]">
+        <div class="min-w-0"><div class="truncate text-base font-semibold tracking-tight">GP Sync</div><div class="text-xs text-ink-3" id="side-version"></div></div>
       </a>
       <nav class="scroll-thin flex-1 space-y-4 overflow-y-auto px-3 py-2">
         ${groups
@@ -82,16 +82,16 @@ function shell(): string {
           .join("")}
       </nav>
       <button class="nav-item mx-3 hidden" id="side-install">${icon("download")}<span>Install app</span></button>
-      <div class="m-3 card p-3" id="side-status">
+      <div class="side-status m-3 card p-4" id="side-status">
         <div class="skeleton h-5 w-24"></div><div class="skeleton mt-3 h-2"></div><div class="skeleton mt-3 h-10"></div>
       </div>
     </aside>
 
     <div class="flex min-w-0 flex-1 flex-col">
-      <header id="topbar" class="z-30 flex shrink-0 items-center gap-3 border-b border-line bg-bg/70 px-4 backdrop-blur-xl lg:px-6" style="padding-top:env(safe-area-inset-top);height:calc(4rem + env(safe-area-inset-top))">
+      <header id="topbar" class="app-topbar z-30 flex shrink-0 items-center gap-3 border-b border-line px-4 lg:px-6" style="padding-top:env(safe-area-inset-top);height:calc(4rem + env(safe-area-inset-top))">
         <img src="icon.svg" alt="" class="size-8 rounded-lg lg:hidden">
         <div class="min-w-0 flex-1">
-          <h1 class="truncate text-base font-semibold lg:text-lg" id="page-title">Overview</h1>
+          <h1 class="truncate text-base font-semibold tracking-tight lg:text-lg" id="page-title">Overview</h1>
           <div class="hidden truncate text-xs text-ink-3 sm:block" id="page-sub"></div>
         </div>
         <span class="lg:hidden" id="top-phase"></span>
@@ -108,7 +108,7 @@ function shell(): string {
     </div>
   </div>
 
-  <nav id="tabbar" class="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-bg/95 backdrop-blur-xl lg:hidden" style="padding-bottom:env(safe-area-inset-bottom)">
+  <nav id="tabbar" class="app-tabbar fixed inset-x-0 bottom-0 z-40 border-t border-line lg:hidden" style="padding-bottom:env(safe-area-inset-bottom)" aria-label="Main navigation">
     <div class="mx-auto grid max-w-lg grid-cols-5">
       ${TABS.map((id) => ROUTES.find((r) => r.id === id) as Route)
         .map((r) =>
@@ -123,7 +123,7 @@ function shell(): string {
 
   <div id="sheet" class="fixed inset-0 z-50 hidden lg:hidden" role="dialog" aria-label="More pages">
     <div class="sheet-bg absolute inset-0 bg-black/50" data-close></div>
-    <div class="sheet-panel absolute inset-x-0 bottom-0 rounded-t-3xl border-t border-line bg-bg p-4 shadow-2xl" style="padding-bottom:calc(1rem + env(safe-area-inset-bottom))">
+    <div class="sheet-panel app-sheet absolute inset-x-0 bottom-0 rounded-t-3xl border-t border-line p-4 shadow-2xl" style="padding-bottom:calc(1rem + env(safe-area-inset-bottom))">
       <div class="mx-auto mb-3 h-1 w-10 rounded-full bg-panel-2"></div>
       <div class="grid grid-cols-3 gap-2">
         ${ROUTES.filter((r) => !TABS.includes(r.id))

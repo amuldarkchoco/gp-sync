@@ -350,11 +350,13 @@ def test_weekly_summary_schedule(media, monkeypatch, clean_stats):
     sync.q("DELETE FROM meta WHERE k='weekly_sent'")
     sync.update_settings({"tz_offset_min": 330, "notify": {"ntfy_url": "https://ntfy.sh/x"}})
     monday_0830 = time_at("2026-11-02 08:30") - 330 * 60  # 08:30 in India
+    monkeypatch.setattr(sync.time, "time", lambda: monday_0830)
     sync.add_stats(monday_0830 - 2 * 86400, photos=5, photo_bytes=2048)  # Saturday
     assert sync.weekly_summary(now=monday_0830) is None  # before 09:00
     msg = sync.weekly_summary(now=monday_0830 + 3600)
     assert "5 photos" in msg and sent == [msg]
     assert sync.weekly_summary(now=monday_0830 + 7200) is None  # only once a week
+    monkeypatch.setattr(sync.time, "time", lambda: monday_0830 + 7 * 86400)
     assert sync.weekly_summary(now=monday_0830 + 7 * 86400 + 3600) is not None  # next Monday
 
 
@@ -484,7 +486,14 @@ def test_folder_report_counts_any_folder(media):
     kids = {c["name"]: c for c in photos["children"]}
     assert kids["trip"]["files"] == 2 and kids["trip"]["has_sub"]
     assert kids[""]["files"] == 1  # b.HEIC sits in Photos itself
-    assert photos["daily"][-1] == {"day": photos["today"], "photos": 2, "videos": 1}
+    assert photos["daily"][-1] == {
+        "day": photos["today"],
+        "photos": 2,
+        "videos": 1,
+        "backed_up": 0,
+        "waiting": 3,
+        "failed": 0,
+    }
     assert sum(kids["trip"]["series"]) == 2
 
     deep = sync.folder_report("Photos/trip/day2", "folders", 7)
@@ -511,6 +520,31 @@ def test_folder_report_dates_files_by_arrival(media):
     sync.scan()
     r = sync.folder_report("Videos", "folders", 30)
     assert r["total"]["new"] == 1  # it still arrived today
+
+
+def test_daily_tracking_filters_by_timezone_and_status(media, monkeypatch):
+    now = 1_700_000_000
+    monkeypatch.setitem(sync.state, "last_scan", now)
+    monkeypatch.setitem(
+        sync.state,
+        "index",
+        [
+            ("Photos/Phone/a.jpg", False, 10, now, False, now),
+            ("Photos/Phone/b.mov", True, 20, now, False, now),
+            ("Photos/Phone/c.jpg", False, 30, now - 86400, False, now),
+            ("Photos/loose.jpg", False, 40, now, False, now),
+        ],
+    )
+    sync.q("INSERT INTO files (path, status) VALUES (?, 'uploaded')", (str(media / "Photos/Phone/a.jpg"),))
+    sync.q("INSERT INTO files (path, status) VALUES (?, 'failed')", (str(media / "Photos/Phone/b.mov"),))
+    report = sync.folder_report("Photos/Phone", "folders", 7, 330, now)
+    today = report["today"]
+    assert report["daily"][-1] == {"day": today, "photos": 1, "videos": 1, "backed_up": 1, "waiting": 0, "failed": 1}
+    result = sync.folder_files("Photos/Phone", day=today, tz_offset_min=330)
+    assert result["total"] == 2 and result["counts"]["failed"] == 1
+    assert sync.folder_files("", day=today, tz_offset_min=330, group="devices")["total"] == 2
+    with pytest.raises(ValueError, match="bad day"):
+        sync.folder_files(day="2023-02-30")
 
 
 def test_folders_api_rejects_unsafe_paths(media, server):

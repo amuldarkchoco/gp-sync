@@ -346,7 +346,14 @@ export interface FolderReport {
     new_day: number;
     last_added: number;
   };
-  daily: { day: string; photos: number; videos: number }[];
+  daily: {
+    day: string;
+    photos: number;
+    videos: number;
+    backed_up: number;
+    waiting: number;
+    failed: number;
+  }[];
   children: FolderGroup[];
   /** The subfolders were a backup app's 00..ff folders: not listed, the photos are shown instead. */
   buckets?: boolean;
@@ -423,6 +430,18 @@ export interface CopyItem {
   state: "queued" | "copied" | "done" | "exists" | "failed" | "counts";
   error: string;
   updated: number;
+}
+export interface CopyCandidate {
+  key: string;
+  name: string;
+  kind: "photo" | "video";
+  size: number;
+  taken: number;
+}
+export interface CopyCandidates {
+  total: number;
+  bytes: number;
+  items: CopyCandidate[];
 }
 export interface CopyReport {
   src: string;

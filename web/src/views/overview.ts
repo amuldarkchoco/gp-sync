@@ -401,9 +401,9 @@ const overview: View = {
       <button class="link-btn" data-ov-custom aria-label="Customize overview">${icon("sliders")}Edit</button>
     </div>
     <div class="grid grid-flow-row-dense grid-cols-1 gap-4 lg:grid-cols-12" id="ov-grid">
-      <section class="card relative overflow-hidden p-5 lg:col-span-5 xl:col-span-4" id="ov-hero" data-card="ov-hero">
+      <section class="card overview-hero relative overflow-hidden p-5 lg:col-span-5 xl:col-span-4" id="ov-hero" data-card="ov-hero">
         <div class="pointer-events-none absolute -top-20 -right-20 size-64 rounded-full blur-3xl" style="background:radial-gradient(circle,var(--glow-1),transparent 70%)"></div>
-        <div class="flex items-center justify-between gap-2"><span class="label">Backed up</span><span id="ov-rate" class="text-xs text-ink-3 tabular-nums"></span></div>
+        <div class="flex items-center justify-between gap-2"><div><span class="label">Your library</span><h2 class="mt-1 text-lg font-semibold tracking-tight">Backup progress</h2></div><span id="ov-rate" class="text-xs text-ink-3 tabular-nums"></span></div>
         <div class="mt-4 flex items-center gap-4 sm:gap-5">
           <div class="ring-box relative shrink-0">${ring(0, 148, 12)}<div class="absolute inset-0 grid place-items-center text-center"><div><div class="num text-3xl" id="ov-pct">–</div><div class="text-[11px] text-ink-3">of library</div></div></div></div>
           <div class="min-w-0 space-y-1.5" id="ov-hero-text"></div>

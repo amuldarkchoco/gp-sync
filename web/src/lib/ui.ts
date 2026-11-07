@@ -123,9 +123,9 @@ export function tile(opts: {
   id?: string;
   tone?: Tone;
 }): string {
-  return `<div class="card lift flex min-w-0 flex-col p-4"${opts.id ? ` id="${opts.id}"` : ""}>
-    <div class="flex items-center gap-2"><span class="grid size-7 place-items-center rounded-lg bg-panel-2 text-ink-2">${icon(opts.ic, "size-4")}</span><span class="label">${esc(opts.label)}</span></div>
-    <div class="num mt-2 truncate text-xl sm:text-2xl" data-v>${opts.value}</div>
+  return `<div class="card metric-card lift flex min-w-0 flex-col p-4"${opts.id ? ` id="${opts.id}"` : ""}>
+    <div class="flex items-center gap-2.5"><span class="metric-icon grid size-9 shrink-0 place-items-center rounded-xl">${icon(opts.ic, "size-4")}</span><span class="label">${esc(opts.label)}</span></div>
+    <div class="num mt-3 truncate text-xl sm:text-2xl" data-v>${opts.value}</div>
     <div class="mt-0.5 truncate text-xs text-ink-3" data-s>${opts.sub ?? ""}</div>
     ${opts.chart !== undefined ? `<div class="mt-auto pt-2" data-c>${opts.chart}</div>` : ""}
   </div>`;

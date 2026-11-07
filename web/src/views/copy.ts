@@ -1,4 +1,11 @@
-import { get, post, type CopyItem, type CopyReport } from "../lib/api";
+import {
+  get,
+  post,
+  type CopyCandidate,
+  type CopyCandidates,
+  type CopyItem,
+  type CopyReport,
+} from "../lib/api";
 import { $, esc, html, toast } from "../lib/dom";
 import { ago, bytes, date, num, pct } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
@@ -17,6 +24,43 @@ let ticks = 0;
 let kinds = new Set<"photo" | "video">(["photo", "video"]);
 let fromYear = "";
 let toYear = "";
+let mode: "selected" | "all" = "selected";
+let selected = new Map<string, CopyCandidate>();
+let candidates: CopyCandidates | null = null;
+let candidateRequest = 0;
+let candidateScope = "";
+let candidateError = false;
+let wasRefreshing = false;
+let offset = 0;
+let search = "";
+
+async function loadCandidates(): Promise<void> {
+  const mine = ++candidateRequest;
+  candidateScope = `${src}\n${dst}`;
+  candidates = null;
+  candidateError = false;
+  render();
+  const params = new URLSearchParams({
+    src,
+    dst,
+    kinds: [...kinds].join(",") || "none",
+    from_year: fromYear,
+    to_year: toYear,
+    q: mode === "selected" ? search : "",
+    offset: String(offset),
+    limit: "60",
+  });
+  try {
+    const result = await get<CopyCandidates>(`copy/items?${params}`);
+    if (mine !== candidateRequest) return;
+    candidates = result;
+  } catch {
+    if (mine !== candidateRequest) return;
+    candidateError = true;
+    toast("Couldn't load items to copy", "bad");
+  }
+  render();
+}
 
 async function load(): Promise<void> {
   const mine = ++request;
@@ -29,7 +73,10 @@ async function load(): Promise<void> {
     src = r.src;
     dst = r.dst;
   }
-  render();
+  if (document.activeElement?.id !== "cp-search") render();
+  if (wasRefreshing && r && !r.refreshing) candidateScope = "";
+  wasRefreshing = !!r?.refreshing;
+  if (r?.listed?.src && r.listed.dst && candidateScope !== `${src}\n${dst}`) void loadCandidates();
 }
 
 async function act(
@@ -83,20 +130,10 @@ function picker(side: "src" | "dst", accs: string[]): string {
 }
 
 function selection(r: CopyReport): { count: number; bytes: number } {
-  // Years only narrow the count; sizes are per kind, so they are an estimate with a year filter.
-  const ks = [...kinds];
-  let count = ks.reduce((a, k) => a + r.todo[k].count, 0);
-  let size = ks.reduce((a, k) => a + r.todo[k].bytes, 0);
-  const all = r.todo.photo.count + r.todo.video.count;
-  if (fromYear || toYear) {
-    const inRange = Object.entries(r.years)
-      .filter(([y]) => (!fromYear || +y >= +fromYear) && (!toYear || +y <= +toYear))
-      .reduce((a, [, n]) => a + n, 0);
-    const share = all ? inRange / all : 0;
-    count = Math.round(count * share);
-    size = size * share;
-  }
-  return { count, bytes: size };
+  void r;
+  return mode === "all"
+    ? { count: candidates?.total ?? 0, bytes: candidates?.bytes ?? 0 }
+    : { count: selected.size, bytes: [...selected.values()].reduce((n, item) => n + item.size, 0) };
 }
 
 let dupOpen = false;
@@ -123,6 +160,7 @@ function startCard(r: CopyReport): string {
     `<option value="">Any</option>${years.map((y) => `<option ${y === cur ? "selected" : ""}>${y}</option>`).join("")}`;
   return `<section class="card self-start">${cardHead("What to copy", "sliders")}
     <div class="card-b space-y-4">
+      <div class="seg"><button data-mode="selected" aria-pressed="${mode === "selected"}">Choose items</button><button data-mode="all" aria-pressed="${mode === "all"}">All matching</button></div>
       <div class="flex flex-wrap gap-2" id="cp-kinds">${(["photo", "video"] as const)
         .map(
           (k) =>
@@ -135,10 +173,44 @@ function startCard(r: CopyReport): string {
              <label><span class="text-ink-3">To year</span><select class="input mt-1" id="cp-to">${opt(toYear)}</select></label></div>`
           : ""
       }
-      <div class="rounded-xl bg-panel-2 p-3 text-sm">About <b>${num(sel.count)}</b> item${sel.count === 1 ? "" : "s"} · ${bytes(sel.bytes)} from <b>${esc(r.src)}</b> to <b>${esc(r.dst)}</b>.</div>
+      <div class="rounded-xl bg-panel-2 p-3 text-sm"><b>${num(sel.count)}</b> item${sel.count === 1 ? "" : "s"} · ${bytes(sel.bytes)} from <b>${esc(r.src)}</b> to <b>${esc(r.dst)}</b>.</div>
       <button class="btn primary w-full justify-center" id="cp-start" ${sel.count ? "" : "disabled"}>${icon("copy")}Start copying</button>
-      <p class="text-xs text-ink-3">One file at a time, newest first: downloaded, checked to be Google's original, uploaded to the other account the free way, then removed here. Comes over: original quality, date, favourite, archive, caption. Doesn't: albums, people names, shared albums. Nothing is deleted in either account.</p>
+      <p class="text-xs text-ink-3">Original quality, date, favourite, archive and caption come over. Nothing is deleted in either account. Album copying is unavailable: the connected Google login cannot list album contents.</p>
     </div></section>`;
+}
+
+function pickerCard(): string {
+  if (mode !== "selected") return "";
+  const page = candidates;
+  return `<section class="card overflow-hidden">${cardHead(
+    "Choose photos and videos",
+    "library",
+    `<span class="text-xs text-ink-3">${num(selected.size)} selected</span>`,
+  )}
+    <div class="flex flex-wrap gap-2 border-b border-line p-4">
+      <label class="min-w-0 flex-1"><span class="sr-only">Search filenames</span><input class="input" id="cp-search" placeholder="Search filenames" value="${esc(search)}"></label>
+      <button class="btn sm" id="cp-search-go">Search</button>
+      <button class="btn sm" id="cp-select-page" ${page?.items.length ? "" : "disabled"}>Select page</button>
+      <button class="btn sm" id="cp-clear" ${selected.size ? "" : "disabled"}>Clear selection</button>
+    </div>
+    ${
+      !page
+        ? candidateError
+          ? `<div class="empty">Couldn't load items <button class="btn sm" id="cp-reload">Try again</button></div>`
+          : `<div class="empty">Loading items…</div>`
+        : page.items.length
+          ? `<div class="grid grid-cols-2 gap-2 p-4 sm:grid-cols-3 lg:grid-cols-4">${page.items
+              .map(
+                (i) =>
+                  `<button class="overflow-hidden rounded-xl border text-left ${selected.has(i.key) ? "border-accent bg-accent/10" : "border-line"}" data-item="${esc(i.key)}" aria-pressed="${selected.has(i.key)}">
+          <div class="relative aspect-square overflow-hidden bg-panel-2"><img class="size-full object-cover" loading="lazy" alt="" src="api/storage/thumb?account=${encodeURIComponent(src)}&key=${encodeURIComponent(i.key)}"><span class="absolute right-2 top-2 rounded-full bg-panel-2 p-1">${icon(selected.has(i.key) ? "check" : i.kind === "video" ? "video" : "photo")}</span></div>
+          <span class="block truncate px-2 pt-2 text-sm">${esc(i.name)}</span><span class="block truncate px-2 pb-2 text-xs text-ink-3">${i.taken ? date(i.taken, true) : "No date"} · ${bytes(i.size)}</span></button>`,
+              )
+              .join("")}</div>`
+          : `<div class="empty">No items match</div>`
+    }
+    ${page && page.total > 60 ? `<div class="flex items-center justify-between border-t border-line p-3"><button class="btn sm" id="cp-prev" ${offset ? "" : "disabled"}>Previous</button><span class="text-xs text-ink-3">${num(offset + 1)}–${num(Math.min(offset + 60, page.total))} of ${num(page.total)}</span><button class="btn sm" id="cp-next" ${offset + 60 < page.total ? "" : "disabled"}>Next</button></div>` : ""}
+    </section>`;
 }
 
 function progressCard(r: CopyReport): string {
@@ -150,7 +222,7 @@ function progressCard(r: CopyReport): string {
   return `<section class="card">${cardHead(
     r.paused ? "Paused" : j.queued || cur ? "Copying" : "Finished",
     r.paused ? "pause" : j.queued || cur ? "loader" : "ok",
-    `${j.queued || cur ? `<button class="btn sm" id="cp-pause">${icon(r.paused ? "play" : "pause")}${r.paused ? "Resume" : "Pause"}</button><button class="btn sm" id="cp-stop">${icon("x")}Stop</button>` : ""}${j.failed ? `<button class="btn sm" id="cp-retry">${icon("retry")}Retry ${num(j.failed)} failed</button>` : ""}`,
+    `${j.queued || cur || r.paused ? `<button class="btn sm" id="cp-pause">${icon(r.paused ? "play" : "pause")}${r.paused ? "Resume" : "Pause"}</button>` : ""}${j.queued || cur ? `<button class="btn sm" id="cp-stop">${icon("x")}Stop</button>` : ""}${j.failed ? `<button class="btn sm" id="cp-retry">${icon("retry")}Retry ${num(j.failed)} failed</button>` : ""}`,
   )}
     <div class="card-b space-y-3">
       <div class="flex items-center justify-between text-sm"><span>${num(done)} of ${num(total)} done</span><span class="text-ink-3 tabular-nums">${Math.floor(pct(done, total))}%</span></div>
@@ -186,8 +258,8 @@ function render(): void {
      </div>
      <div class="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3 text-xs text-ink-3">
        <span>${num(accs.length)} of ${num(max)} accounts connected${accs.length < max ? ` · <a class="link-btn" href="#/settings/accounts">Add an account</a>` : ""}</span>
-       <span class="ml-auto">${r?.refreshed.src ? `Libraries read ${ago(Math.min(r.refreshed.src, r.refreshed.dst ?? r.refreshed.src))}` : ""}</span>
-       <button class="btn sm" id="cp-refresh" ${r?.refreshing ? "disabled" : ""}>${r?.refreshing ? `${icon("loader", "spin")}Reading libraries…` : `${icon("refresh")}${r?.listed.src && r.listed.dst ? "Refresh from Google" : "Read both libraries"}`}</button>
+       <span class="ml-auto">${r?.refreshed?.src ? `Libraries read ${ago(Math.min(r.refreshed.src, r.refreshed.dst ?? r.refreshed.src))}` : ""}</span>
+       <button class="btn sm" id="cp-refresh" ${r?.refreshing ? "disabled" : ""}>${r?.refreshing ? `${icon("loader", "spin")}Reading libraries…` : `${icon("refresh")}${r?.listed?.src && r.listed.dst ? "Refresh from Google" : "Read both libraries"}`}</button>
      </div>`,
   );
   if (!r || r.ready === false) {
@@ -207,7 +279,7 @@ function render(): void {
   const todo = r.todo.photo.count + r.todo.video.count;
   html(
     $("#cp-body"),
-    `${r.jobs.counts ? `<section class="card mb-4 flex items-start gap-3 border-bad/40 p-4">${icon("warn", "size-5 shrink-0 text-bad")}<div class="text-sm"><div class="font-medium">Paused: Google counted a copy against ${esc(r.dst)}'s storage</div><div class="mt-0.5 text-ink-3">So the free upload doesn't work for that account right now. Nothing was deleted. Resume only if you're fine with copies using its storage.</div></div></section>` : ""}
+    `${r.jobs.counts && r.paused ? `<section class="card mb-4 flex items-start gap-3 border-bad/40 p-4">${icon("warn", "size-5 shrink-0 text-bad")}<div class="text-sm"><div class="font-medium">Paused: Google counted a copy against ${esc(r.dst)}'s storage</div><div class="mt-0.5 text-ink-3">So the free upload doesn't work for that account right now. Nothing was deleted. Resume only if you're fine with copies using its storage.</div></div></section>` : ""}
     ${r.error ? `<section class="card mb-4 p-4 text-sm text-warn">${esc(r.error)} Copying goes on by itself when it's back.</section>` : ""}
     <div class="grid grid-cols-2 gap-4 xl:grid-cols-4">
       ${tile({ label: "In " + r.src.split("@")[0], value: num(r.src_total), ic: "library", sub: "Photos and videos it owns" })}
@@ -218,6 +290,7 @@ function render(): void {
     <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[22rem_1fr]">
       ${startCard(r)}
       <div class="min-w-0 space-y-4">
+        ${pickerCard()}
         ${progressCard(r)}
         ${r.failed.length ? `<section class="card overflow-hidden">${cardHead("Didn't work", "error")}<div class="divide-y divide-line">${r.failed.slice(0, 20).map(itemRow).join("")}</div></section>` : ""}
         ${dupCard(r)}
@@ -241,28 +314,90 @@ function onClick(e: Event): void {
     if (side === "src" && acc !== src) [src, dst] = acc === dst ? [acc, src] : [acc, dst];
     else if (side === "dst" && acc !== dst) [src, dst] = acc === src ? [dst, acc] : [src, acc];
     else return;
+    selected.clear();
+    fromYear = "";
+    toYear = "";
+    offset = 0;
+    search = "";
+    candidates = null;
+    candidateScope = "";
+    candidateRequest++;
     void load();
   } else if (b.id === "cp-swap") {
     [src, dst] = [dst, src];
+    selected.clear();
+    fromYear = "";
+    toYear = "";
+    offset = 0;
+    search = "";
+    candidates = null;
+    candidateScope = "";
+    candidateRequest++;
     void load();
+  } else if (b.dataset.mode) {
+    mode = b.dataset.mode === "all" ? "all" : "selected";
+    offset = 0;
+    void loadCandidates();
+  } else if (b.dataset.item) {
+    const item = candidates?.items.find((i) => i.key === b.dataset.item);
+    if (item) {
+      if (selected.has(item.key)) selected.delete(item.key);
+      else if (selected.size < 5000) selected.set(item.key, item);
+      else toast("Choose at most 5,000 items at a time", "bad");
+      render();
+    }
+  } else if (b.id === "cp-select-page") {
+    for (const item of candidates?.items ?? []) {
+      if (selected.size >= 5000) break;
+      selected.set(item.key, item);
+    }
+    render();
+  } else if (b.id === "cp-clear") {
+    selected.clear();
+    render();
+  } else if (b.id === "cp-search-go") {
+    search = ($("#cp-search") as HTMLInputElement).value.trim();
+    offset = 0;
+    void loadCandidates();
+  } else if (b.id === "cp-reload") {
+    void loadCandidates();
+  } else if (b.id === "cp-prev" || b.id === "cp-next") {
+    offset = Math.max(0, offset + (b.id === "cp-next" ? 60 : -60));
+    void loadCandidates();
   } else if (b.dataset.kind) {
     const k = b.dataset.kind as "photo" | "video";
     if (kinds.has(k)) kinds.delete(k);
     else kinds.add(k);
-    render();
+    selected.clear();
+    offset = 0;
+    void loadCandidates();
   } else if (b.id === "cp-start") {
     const sel = report ? selection(report) : { count: 0, bytes: 0 };
     if (
       !confirm(
-        `Copy about ${num(sel.count)} items (${bytes(sel.bytes)}) from ${src} to ${dst}?\n\nNothing is deleted in either account.`,
+        `Copy ${num(sel.count)} items (${bytes(sel.bytes)}) from ${src} to ${dst}?\n\nNothing is deleted in either account.`,
       )
     )
       return;
-    void act(
-      "start",
-      { kinds: [...kinds], from_year: fromYear || null, to_year: toYear || null },
-      (r) => `${num(r.queued ?? 0)} item${r.queued === 1 ? "" : "s"} queued`,
-    );
+    void (async () => {
+      try {
+        const result = await post<{ queued: number }>("copy/start", {
+          src,
+          dst,
+          kinds: [...kinds],
+          from_year: fromYear || null,
+          to_year: toYear || null,
+          ...(mode === "selected" ? { keys: [...selected.keys()] } : {}),
+        });
+        toast(`${num(result.queued)} item${result.queued === 1 ? "" : "s"} queued`, "good");
+        selected.clear();
+        offset = 0;
+        await load();
+        await loadCandidates();
+      } catch (e) {
+        toast((e as Error).message, "bad");
+      }
+    })();
   } else if (b.id === "cp-pause") void act("pause", { paused: !report?.paused });
   else if (b.id === "cp-stop") {
     if (confirm("Stop copying? What's already copied stays. The rest is taken off the list."))
@@ -274,9 +409,18 @@ function onClick(e: Event): void {
 }
 
 const copyView: View = {
-  subtitle: "Copy everything one Google account has to another",
+  subtitle: "Copy selected photos and videos between Google accounts",
   mount(el) {
     kinds = new Set(["photo", "video"]);
+    fromYear = "";
+    toYear = "";
+    mode = "selected";
+    selected.clear();
+    candidates = null;
+    candidateScope = "";
+    wasRefreshing = false;
+    offset = 0;
+    search = "";
     el.innerHTML = `
     <section class="card mb-4 hidden" id="cp-bar"></section>
     <div id="cp-body"><div class="grid grid-cols-2 gap-4 xl:grid-cols-4">${'<div class="card skeleton h-28"></div>'.repeat(4)}</div><div class="card skeleton mt-4 h-72"></div></div>`;
@@ -286,7 +430,15 @@ const copyView: View = {
       if (t.id === "cp-from") fromYear = t.value;
       else if (t.id === "cp-to") toYear = t.value;
       else return;
-      render();
+      selected.clear();
+      offset = 0;
+      void loadCandidates();
+    });
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.target as HTMLElement).id === "cp-search") {
+        e.preventDefault();
+        document.getElementById("cp-search-go")?.click();
+      }
     });
     void load();
     timer = window.setInterval(() => {
@@ -298,6 +450,7 @@ const copyView: View = {
   unmount() {
     clearInterval(timer);
     request++;
+    candidateRequest++;
   },
 };
 

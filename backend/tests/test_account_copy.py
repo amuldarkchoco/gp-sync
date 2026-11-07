@@ -102,6 +102,9 @@ def test_pauses_when_copies_count(libs):
     sync.copy_step(get)
     assert sync.q("SELECT state FROM copyjobs WHERE media_key='NEW'")[0][0] == "counts"
     assert sync.copy_report(SRC, DST)["paused"]
+    with pytest.raises(ValueError, match="counted"):
+        sync.copy_start(SRC, DST, keys=["CLIP"])
+    assert sync.meta_get("copy_paused") == "1"
 
 
 def test_wrong_download_fails_and_outage_waits(libs, monkeypatch):
@@ -169,3 +172,38 @@ def test_year_filter_keeps_the_other_copy(libs):
     # NEW and NEW-AGAIN are the same file; only one is ever queued, whatever the filter.
     assert sync.copy_start(SRC, DST, ["photo"], 2020, None)["queued"] == 1
     assert sync.copy_start(SRC, DST, ["photo"], 2020, None)["queued"] == 0
+
+
+def test_selecting_items_filters_and_preserves_duplicate_safety(libs):
+    page = sync.copy_candidates(SRC, DST, limit=1)
+    assert page["total"] == 3 and len(page["items"]) == 1
+    assert sync.copy_candidates(SRC, DST, query="clip")["items"][0]["key"] == "CLIP"
+    assert sync.copy_start(SRC, DST, keys=[]) == {"queued": 0}
+    assert sync.copy_start(SRC, DST, keys=["CLIP", "SHARED", "PARTNER", "no-such-key"]) == {"queued": 1}
+    assert sync.q("SELECT media_key FROM copyjobs WHERE src=? AND dst=?", (SRC, DST)) == [("CLIP",)]
+    assert sync.copy_start(SRC, DST, keys=["CLIP"]) == {"queued": 0}
+    with pytest.raises(ValueError):
+        sync.copy_start(SRC, DST, keys="CLIP")
+
+
+def test_start_does_not_override_manual_pause(libs):
+    sync.meta_set("copy_paused", "1")
+    assert sync.copy_start(SRC, DST, keys=["CLIP"]) == {"queued": 1}
+    assert sync.meta_get("copy_paused") == "1"
+
+
+def test_copy_requires_both_read_libraries(libs, tmp_path, monkeypatch):
+    monkeypatch.setattr(sync, "GPMC_HOME", tmp_path / "empty")
+    with pytest.raises(ValueError, match="library"):
+        sync.copy_start(SRC, DST, keys=["CLIP"])
+    with pytest.raises(ValueError, match="libraries"):
+        sync.copy_candidates(SRC, DST)
+
+
+def test_copy_candidates_api(libs, server):
+    with urllib.request.urlopen(f"{server}/api/copy/items?src={SRC}&dst={DST}&q=clip") as r:
+        result = json.load(r)
+        assert result["total"] == 1 and result["items"][0]["key"] == "CLIP"
+    body = json.dumps({"src": SRC, "dst": DST, "keys": [], "kinds": ["photo", "video"]}).encode()
+    with urllib.request.urlopen(urllib.request.Request(f"{server}/api/copy/start", body)) as r:
+        assert json.load(r)["queued"] == 0

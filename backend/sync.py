@@ -6,6 +6,7 @@ Works on Umbrel and on any Docker host: Linux, Windows, macOS, NAS (see README.m
 """
 
 import base64
+import calendar
 import collections
 import contextlib
 import fnmatch
@@ -1333,8 +1334,9 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
     first = today - days + 1
     index = state["index"]
     total = _blank()
-    daily = {}  # day number -> [photos, videos]
+    daily = {}  # day number -> [photos, videos, backed up, waiting, failed]
     groups = {}
+    file_states = {rel(p): st for p, st in q("SELECT path, status FROM files")}
     backed = backed_folders()
     skipped_tops = {}  # top folder not backed up -> files in it (shown as a note, not counted)
     uploads = upload_folder_name()
@@ -1382,10 +1384,13 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
             d["synced"] += synced
             d["last_added"] = max(d["last_added"], added)
         day = int((added + shift) // 86400)
-        if day >= first:
+        if first <= day <= today:
             total["new"] += 1
             g["new"] += 1
-            daily.setdefault(day, [0, 0])[video] += 1
+            counts = daily.setdefault(day, [0, 0, 0, 0, 0])
+            counts[int(bool(video))] += 1
+            st = file_states.get(name)
+            counts[2 if synced or st in DONE else 4 if st == "failed" else 3] += 1
             g["daily"][day] = g["daily"].get(day, 0) + 1
 
     def day_str(n):
@@ -1432,12 +1437,18 @@ def folder_report(path="", group="folders", days=30, tz_offset_min=0, now=None):
             **{k: total[k] for k in ("photos", "videos", "photo_bytes", "video_bytes", "synced", "new")},
             "files": total["photos"] + total["videos"],
             "bytes": total["photo_bytes"] + total["video_bytes"],
-            "new_week": sum(p + v for day, (p, v) in daily.items() if day > today - 7),
-            "new_day": sum(p + v for day, (p, v) in daily.items() if day == today),
+            "new_week": sum(c[0] + c[1] for day, c in daily.items() if day > today - 7),
+            "new_day": sum(c[0] + c[1] for day, c in daily.items() if day == today),
             "last_added": total["last_added"],
         },
         "daily": [
-            {"day": day_str(n), "photos": daily.get(n, [0, 0])[0], "videos": daily.get(n, [0, 0])[1]}
+            dict(
+                zip(
+                    ("day", "photos", "videos", "backed_up", "waiting", "failed"),
+                    (day_str(n), *daily.get(n, [0, 0, 0, 0, 0])),
+                    strict=True,
+                )
+            )
             for n in range(first, today + 1)
         ],
         "children": [] if buckets else children,
@@ -1461,13 +1472,25 @@ FILE_SORTS = {
 }
 
 
-def folder_files(path="", status="all", kind="all", sort="new", offset=0, limit=60):
+def folder_files(
+    path="", status="all", kind="all", sort="new", offset=0, limit=60, day="", tz_offset_min=0, group="folders"
+):
     """Every photo and video in a folder and the folders inside it, backed up yet or not."""
     prefix = path + "/" if path else ""
     backed = None if path else backed_folders()
     entries = [
         e for e in state["index"] if e[0].startswith(prefix) and (backed is None or e[0].split("/", 1)[0] in backed)
     ]
+    if group == "devices" and not path:
+        entries = [e for e in entries if e[0].count("/") >= 2]
+    if day:
+        try:
+            day_number = int(calendar.timegm(time.strptime(day, "%Y-%m-%d")) // 86400)
+            if time.strftime("%Y-%m-%d", time.gmtime(day_number * 86400)) != day:
+                raise ValueError
+        except (ValueError, OverflowError):
+            raise ValueError("bad day") from None
+        entries = [e for e in entries if int((e[3] + tz_offset_min * 60) // 86400) == day_number]
     states = {
         rel(p): (st, err)
         for p, st, err in q(
@@ -3159,43 +3182,85 @@ def copy_report(src, dst):
     }
 
 
-def copy_start(src, dst, kinds=("photo", "video"), from_year=None, to_year=None):
+def copy_candidates(src, dst, kinds=("photo", "video"), from_year=None, to_year=None, query="", offset=0, limit=60):
+    """Browse distinct, eligible source items without putting them on the copy queue."""
+    rows = _library_rows(
+        src,
+        f"""SELECT media_key, dedup_key, file_name, type, size_bytes, utc_timestamp
+            FROM remote_media WHERE {_OWNED} ORDER BY utc_timestamp DESC, media_key""",
+    )
+    target = _library_rows(dst, "SELECT dedup_key FROM remote_media")
+    if rows is None or target is None:
+        raise ValueError("Read both libraries before copying")
+    have = {k for (k,) in target}
+    handled = {k for (k,) in q("SELECT dedup_key FROM copyjobs WHERE src=? AND dst=?", (src, dst))}
+    selected = []
+    for key, dedup, name, kind, size, taken in rows:
+        k = RECLAIM_KINDS.get(kind, "photo")
+        t = _seconds(taken)
+        y = _year(t)
+        if dedup in have or dedup in handled or k not in kinds:
+            continue
+        if (from_year and (not y or y < from_year)) or (to_year and (not y or y > to_year)):
+            continue
+        if query and query.casefold() not in (name or "").casefold():
+            continue
+        handled.add(dedup)
+        selected.append({"key": key, "name": name or "", "kind": k, "size": size or 0, "taken": t})
+    return {
+        "total": len(selected),
+        "bytes": sum(i["size"] for i in selected),
+        "items": selected[offset : offset + limit],
+    }
+
+
+def copy_start(src, dst, kinds=("photo", "video"), from_year=None, to_year=None, keys=None):
     """Queue everything `src` owns that `dst` doesn't have yet (with the chosen filters)."""
+    if meta_get("copy_paused") == "1" and q("SELECT 1 FROM copyjobs WHERE state='counts' LIMIT 1"):
+        raise ValueError("Copying is paused because Google counted a copy against storage; review and resume first")
     src_rows = _library_rows(
         src,
         f"""SELECT media_key, dedup_key, file_name, type, size_bytes, utc_timestamp, is_favorite, is_archived,
-                   caption FROM remote_media WHERE {_OWNED}""",
+                   caption FROM remote_media WHERE {_OWNED} ORDER BY utc_timestamp DESC, media_key""",
     )
     if src_rows is None:
         raise ValueError("Read the library of the account to copy from first")
-    have = {k for (k,) in _library_rows(dst, "SELECT dedup_key FROM remote_media") or []}
+    dst_rows = _library_rows(dst, "SELECT dedup_key FROM remote_media")
+    if dst_rows is None:
+        raise ValueError("Read the library of the account to copy to first")
+    have = {k for (k,) in dst_rows}
     handled = {k for (k,) in q("SELECT dedup_key FROM copyjobs WHERE src=? AND dst=?", (src, dst))}
+    if keys is not None:
+        if not isinstance(keys, list) or len(keys) > 5000 or any(not isinstance(k, str) for k in keys):
+            raise ValueError("Select at most 5,000 valid items at a time")
+        keys = set(keys)
     now = time.time()
     batch = []
     for key, dedup, name, kind, size, taken, fav, arch, cap in src_rows:
         k = RECLAIM_KINDS.get(kind, "photo")
         t = _seconds(taken)
         y = _year(t)
-        if dedup in have or dedup in handled or k not in kinds:
+        if dedup in have or dedup in handled or k not in kinds or (keys is not None and key not in keys):
             continue  # duplicates (already there) are never copied
         if (from_year and (not y or y < from_year)) or (to_year and (not y or y > to_year)):
             continue
         handled.add(dedup)  # the same file twice: copy it once
         batch.append((src, dst, key, dedup, name, k, size, t, int(bool(fav)), int(bool(arch)), cap or "", now))
     with db_lock:
+        before = CONN.total_changes
         CONN.executemany(
             """INSERT OR IGNORE INTO copyjobs (src, dst, media_key, dedup_key, name, kind, size, taken, favorite,
                                               archived, caption, state, updated)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,'queued',?)""",
             batch,
         )
+        queued = CONN.total_changes - before
         CONN.commit()
     cache.bump()
-    meta_set("copy_paused", "0")
     copy_wake.set()
-    if batch:
-        log(f"Copying {len(batch)} items from {src} to {dst}", "account")
-    return {"queued": len(batch)}
+    if queued:
+        log(f"Copying {queued} items from {src} to {dst}", "account")
+    return {"queued": queued}
 
 
 def copy_stop(src, dst):
@@ -3843,6 +3908,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(copy_report(src, dst))
             else:
                 self.json({"src": src, "dst": dst, "accounts": accs, "ready": False})
+        elif path == "/api/copy/items":
+            accs = dict(accounts())
+            src, dst = arg("src", ""), arg("dst", "")
+            if src not in accs or dst not in accs or src == dst:
+                self.json({"error": "Pick two different connected accounts"}, 400)
+                return
+            try:
+                kinds = [k for k in arg("kinds", "photo,video").split(",") if k in ("photo", "video")]
+                years = [int(arg(k, "")) if arg(k, "") else None for k in ("from_year", "to_year")]
+                result = copy_candidates(
+                    src, dst, kinds, *years, arg("q", "")[:200], arg("offset", 0, 0, 10**9), arg("limit", 60, 1, 200)
+                )
+                self.json(result)
+            except ValueError as e:
+                self.json({"error": str(e)}, 400)
         elif path == "/api/storage/thumb":
             account, key = arg("account", ""), arg("key", "")
             self.image("gthumb", f"{account}\n{key}", google_thumb)
@@ -3852,8 +3932,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.json({"error": "bad folder"}, 400)
                 return
             args = (folder, arg("status", "all"), arg("kind", "all"), arg("sort", "new"),
-                    arg("offset", 0, 0, 10**9), arg("limit", 60, 1, 500))  # fmt: skip
-            self.cached(f"ffiles:{json.dumps(args)}:{state['last_scan']}", 30, lambda: folder_files(*args))
+                    arg("offset", 0, 0, 10**9), arg("limit", 60, 1, 500),
+                    arg("day", ""), arg("tz", 0, -840, 840), arg("group", "folders"))  # fmt: skip
+            try:
+                self.cached(f"ffiles:{json.dumps(args)}:{state['last_scan']}", 30, lambda: folder_files(*args))
+            except ValueError as e:
+                self.json({"error": str(e)}, 400)
         elif path == "/api/totals":
             self.cached("totals", 60, totals)
         elif path == "/api/settings":
@@ -4037,10 +4121,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.json({"ok": True})
             elif path == "/api/copy/start":
                 try:
-                    kinds = [k for k in req.get("kinds") or ["photo", "video"] if k in ("photo", "video")]
+                    kinds = [k for k in req.get("kinds", ["photo", "video"]) if k in ("photo", "video")]
                     years = [int(req[k]) if req.get(k) else None for k in ("from_year", "to_year")]
-                    self.json(copy_start(src, dst, kinds, *years))
-                except ValueError as e:
+                    self.json(copy_start(src, dst, kinds, *years, keys=req.get("keys")))
+                except (ValueError, TypeError) as e:
                     self.json({"error": str(e)}, 400)
             elif path == "/api/copy/stop":
                 self.json(copy_stop(src, dst))
