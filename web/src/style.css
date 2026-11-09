@@ -267,7 +267,7 @@ body::before {
     @apply transition-transform duration-200;
   }
   .btn svg {
-    @apply size-4;
+    @apply size-4 shrink-0;
   }
   .btn.primary {
     @apply border-transparent font-semibold;
@@ -489,6 +489,9 @@ body::before {
     @apply sticky top-0 flex-col gap-1 rounded-[20px] border border-line bg-panel p-2;
     box-shadow: var(--shadow);
   }
+  .set-group {
+    @apply px-2.5 pt-3 pb-1 text-[11px] font-semibold tracking-wider text-ink-3 uppercase first:pt-1;
+  }
   .set-item {
     @apply relative flex cursor-pointer items-center gap-3 overflow-hidden rounded-2xl px-2.5 py-2 text-sm font-medium text-ink-2 transition-[background-color,color] duration-200 select-none;
   }
@@ -581,6 +584,50 @@ body::before {
     .set-actions .btn.primary {
       @apply col-span-2;
     }
+  }
+
+  /* Account picker (lib/account-menu.ts). */
+  .acc-pick {
+    @apply relative inline-block max-w-full;
+  }
+  .acc-btn {
+    @apply flex h-10 max-w-full items-center gap-2.5 rounded-xl border border-line bg-panel-2 pr-3 pl-1.5 transition-colors;
+  }
+  .acc-btn:not(:disabled) {
+    @apply cursor-pointer;
+  }
+  .acc-btn:not(:disabled):hover,
+  .acc-btn[aria-expanded="true"] {
+    border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+  }
+  .acc-av {
+    @apply grid shrink-0 place-items-center rounded-full text-xs font-semibold;
+    color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 18%, var(--surface));
+  }
+  .acc-menu {
+    @apply absolute top-full left-0 z-40 mt-1.5 w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-line p-1.5;
+    background: var(--surface);
+    box-shadow: 0 18px 40px -16px rgb(0 0 0 / 0.55);
+  }
+  .acc-item {
+    @apply flex w-full cursor-pointer items-center gap-3 rounded-xl px-2.5 py-2 outline-none;
+  }
+  .acc-item:hover,
+  .acc-item:focus-visible {
+    background: var(--panel-2);
+  }
+  .acc-tick {
+    @apply shrink-0 opacity-0;
+    color: var(--accent);
+  }
+  .acc-item[aria-checked="true"] .acc-tick {
+    @apply opacity-100;
+  }
+
+  /* A prompt to copy (Settings › Google accounts). */
+  .prompt-box {
+    @apply max-h-48 overflow-auto rounded-xl border border-line bg-panel-2 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-2;
   }
 
   /* Theme picker: a small picture of each theme. */
@@ -1412,7 +1459,8 @@ svg:hover > .donut-arc:not(:hover) {
   flex-shrink: 0;
   width: var(--w);
   height: var(--h);
-  border-radius: 999px;
+  /* A rounded rectangle whose corners follow the square knob's (its radius plus the gap). */
+  border-radius: calc(var(--k) * 0.32 + var(--pad));
   cursor: pointer;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;

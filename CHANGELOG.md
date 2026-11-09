@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.2
+
+- Settings, regrouped: Backup (Sync, Folders, Google accounts), Google Photos (Albums, Dates,
+  Sources, Duplicates, Google tools) and App. Every option lives there, including the per-app
+  album, caption and archive choices and pausing account copies.
+- Dates explains why some photos have no date and what the "Date unknown" album is for.
+- Google accounts: each account with its folders and state, buttons for its storage and dates,
+  Manage to check logins, read libraries or check dates for several accounts at once, and a prompt
+  to give Claude Code or Codex to fetch the login line from your phone.
+- Fix dates and Free storage pick accounts from a menu; links open them on a given account.
+- Free storage frees photos only, videos only, or both, including everything at once ("Free all").
+  Items shared with you, in the Trash or the Locked folder are never touched.
+- Activity names what happened: Date fixed, Re-uploaded free, Copied, Deleted in Google,
+  Downloaded, with a "Google changes" filter. Copies between accounts are now logged too.
+- The light/dark switch is a rounded rectangle that fits its square knob. Appearance is simpler.
+
 ## 1.4.1
 
 - The light/dark switch changes the page at the knob's own speed: the new theme spreads from the

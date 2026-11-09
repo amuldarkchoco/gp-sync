@@ -321,3 +321,41 @@ def test_a_broken_download_leaves_no_part_file(library, monkeypatch):
     step(FakeClient(library, set()))
     assert not list((sync.RECLAIM_DIR / ACC / "BIG").glob("*.part"))
     sync.reclaim_state.clear()
+
+
+def test_free_only_videos_only_photos_or_both(library, server):
+    with Storage(library) as st:
+        st.update([item("CLIP", data=b"clip video", type=2), item("LOCKED", data=b"locked", is_locked=True)])
+    r = sync.storage_report(ACC)
+    assert r["kinds"] == {"photo": {"count": 2, "bytes": len(DATA) + 5}, "video": {"count": 1, "bytes": 10}}
+
+    def queued():
+        return sorted(k for (k,) in sync.q("SELECT media_key FROM reclaim WHERE state='queued'"))
+
+    assert sync.reclaim_queue_all(ACC, "video") == {"queued": 1}
+    assert queued() == ["CLIP"]
+    assert sync.reclaim_queue_all(ACC, "photo") == {"queued": 2}
+    assert queued() == ["BIG", "CLIP", "SMALL"]  # never shared, trashed, locked or free items
+    assert sync.reclaim_queue_all(ACC, "all") == {"queued": 0}  # nothing queued twice
+
+    req = urllib.request.Request(
+        f"{server}/api/storage/download", json.dumps({"account": ACC, "kind": "sideways"}).encode()
+    )
+    with pytest.raises(urllib.error.HTTPError):
+        urllib.request.urlopen(req)
+
+
+def test_items_from_others_are_never_queued(library):
+    assert sync.reclaim_queue(ACC, ["PARTNER", "TRASHED", "FREE"]) == {"queued": 0}
+
+
+def test_activity_names_each_step(library):
+    sync.sq("DELETE FROM events")
+    client = FakeClient(library, {b64(DATA)})
+    sync.reclaim_queue(ACC, ["BIG"])
+    for _ in range(3):
+        step(client)
+    kinds = [k for (k,) in sync.sq("SELECT kind FROM events ORDER BY time")]
+    assert kinds == ["downloaded", "deleted", "freed"]
+    assert [i["kind"] for i in sync.activity("google")["items"]] == ["freed", "deleted", "downloaded"]
+    assert not sync.activity("uploaded")["items"]  # not counted as new uploads

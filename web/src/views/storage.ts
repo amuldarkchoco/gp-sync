@@ -3,6 +3,7 @@ import { $, esc, html, toast } from "../lib/dom";
 import { ago, bytes, date, num, pct } from "../lib/format";
 import { icon } from "../lib/icons";
 import { status } from "../lib/store";
+import { accountMenu, wireAccountMenu } from "../lib/account-menu";
 import { badge, cardHead, tile, type Tone } from "../lib/ui";
 import type { View } from "./view";
 
@@ -15,7 +16,10 @@ let timer = 0;
 let ticks = 0;
 let request = 0;
 let shown = 50;
+/** Which items the list and the Free buttons work on. */
+let kind: "all" | "photo" | "video" = "all";
 const picked = new Set<string>();
+const KIND_NAME = { all: "photos and videos", photo: "photos", video: "videos" } as const;
 
 async function load(): Promise<void> {
   const mine = ++request;
@@ -110,12 +114,14 @@ function row(i: StorageItem, r: StorageReport): string {
 function render(): void {
   const r = report;
   const accs = status()?.accounts ?? [];
-  html(
-    $("#st-acc"),
-    accs.length > 1
-      ? `<select class="input w-auto" id="st-account">${accs.map((a) => `<option ${a === account ? "selected" : ""}>${esc(a)}</option>`).join("")}</select>`
-      : `<span class="text-sm text-ink-2">${esc(account || "No account")}</span>`,
-  );
+  // Redrawn only when it changes: a redraw would close the menu while it is open.
+  const accKey = [account, ...accs, ...(status()?.login_failed ?? [])].join("|");
+  const accBox = $("#st-acc");
+  if (accBox.dataset.key !== accKey) {
+    accBox.dataset.key = accKey;
+    html(accBox, accountMenu("st-account", account));
+    wireAccountMenu("st-account", pickAccount);
+  }
   if (!r || !r.account) {
     html(
       $("#st-body"),
@@ -145,7 +151,20 @@ function render(): void {
     ["queued", "downloaded", "in_google", "checking"].includes(i.state),
   ).length;
   const oursCount = r.ours.counted > 0;
-  const fresh = r.items.filter((i) => !i.state);
+  const listed = r.items.filter((i) => kind === "all" || i.kind === kind);
+  const fresh = listed.filter((i) => !i.state);
+  const kinds = r.kinds ?? { photo: { count: 0, bytes: 0 }, video: { count: 0, bytes: 0 } };
+  const ofKind =
+    kind === "all"
+      ? { count: kinds.photo.count + kinds.video.count, bytes: kinds.photo.bytes + kinds.video.bytes }
+      : kinds[kind];
+  const canFree = !(r.blocked || oursCount);
+  const segs = (["all", "photo", "video"] as const)
+    .map((k) => {
+      const n = k === "all" ? kinds.photo.count + kinds.video.count : kinds[k].count;
+      return `<button data-kind="${k}" aria-pressed="${k === kind}">${k === "all" ? "Both" : k === "photo" ? "Photos" : "Videos"} <span class="opacity-60">${num(n)}</span></button>`;
+    })
+    .join("");
   const oursOk = r.ours.seen > 0 && r.ours.counted === 0;
   html(
     $("#st-body"),
@@ -178,23 +197,28 @@ function render(): void {
         <div class="border-t border-line px-4 py-3 text-xs text-ink-3">Keeps quality, date, favourite, archive and caption. Albums, shared links and comments are lost.</div>
       </section>
       <section class="card min-w-0 overflow-hidden">
-        ${cardHead(
-          "Biggest first",
-          "layers",
-          r.blocked || oursCount
-            ? ""
-            : `<button class="btn sm" id="st-picked" ${picked.size ? "" : "disabled"}>${icon("sparkles")}Free picked (${picked.size})</button><button class="btn sm primary" id="st-next" ${fresh.length ? "" : "disabled"}>${icon("sparkles")}Free 10 biggest</button>`,
-        )}
+        ${cardHead("Biggest first", "layers", `${num(ofKind.count)} · ${bytes(ofKind.bytes)}`)}
+        <div class="flex flex-col gap-3 border-b border-line px-4 py-3 sm:flex-row sm:items-center">
+          <div class="seg" id="st-kind" aria-label="Photos or videos">${segs}</div>
+          ${
+            canFree
+              ? `<div class="grid grid-cols-3 gap-2 sm:ml-auto sm:flex">
+            <button class="btn sm justify-center whitespace-nowrap" id="st-picked" ${picked.size ? "" : "disabled"}>${icon("check")}Picked (${picked.size})</button>
+            <button class="btn sm justify-center whitespace-nowrap" id="st-next" ${fresh.length ? "" : "disabled"}>${icon("sparkles")}10 biggest</button>
+            <button class="btn sm primary justify-center whitespace-nowrap" id="st-all" ${ofKind.count ? "" : "disabled"}>${icon("sparkles")}Free all</button></div>`
+              : ""
+          }
+        </div>
         <p class="border-b border-line px-4 py-2.5 text-xs text-ink-3">Other accounts run alongside, and copies too. Downloads need free space here: ${bytes(r.free_space)} left.</p>
         ${
-          r.items.length
-            ? `<div class="divide-y divide-line">${r.items
+          listed.length
+            ? `<div class="divide-y divide-line">${listed
                 .slice(0, shown)
                 .map((i) => row(i, r))
                 .join(
                   "",
-                )}</div>${r.items.length > shown ? `<div class="flex justify-center p-3"><button class="btn" id="st-more">${icon("plus")}Show more (${num(r.items.length - shown)} left)</button></div>` : ""}`
-            : `<div class="empty">${icon("shield")}Nothing in this account counts against storage</div>`
+                )}</div>${listed.length > shown ? `<div class="flex justify-center p-3"><button class="btn" id="st-more">${icon("plus")}Show more (${num(listed.length - shown)} left)</button></div>` : ""}`
+            : `<div class="empty">${icon("shield")}No ${KIND_NAME[kind]} in this account count against storage</div>`
         }
       </section>
     </div>`,
@@ -230,24 +254,52 @@ function onClick(e: Event): void {
   } else if (b.id === "st-next") {
     start(
       (report?.items ?? [])
-        .filter((i) => !i.state)
+        .filter((i) => !i.state && (kind === "all" || i.kind === kind))
         .slice(0, 10)
         .map((i) => i.key),
     );
+  } else if (b.dataset.kind) {
+    kind = b.dataset.kind as typeof kind;
+    shown = 50;
+    render();
+  } else if (b.id === "st-all") {
+    const k = report?.kinds;
+    const n = !k ? 0 : kind === "all" ? k.photo.count + k.video.count : k[kind].count;
+    const size = !k ? 0 : kind === "all" ? k.photo.bytes + k.video.bytes : k[kind].bytes;
+    if (
+      confirm(
+        `Free up all ${KIND_NAME[kind]} in ${account}: ${num(n)} items, ${bytes(size)}?\n\nOne at a time, biggest first, each is downloaded and checked, deleted in Google Photos (Trash included) and uploaded again for free. Quality, date, favourite, archive and caption are kept; albums, shared links and comments are lost. You can cancel items that haven't started.`,
+      )
+    )
+      void act("download", { kind }, `Freeing all ${KIND_NAME[kind]}`);
   } else if (b.id === "st-more") {
     shown += 50;
     render();
   }
 }
 
+/** Another account chosen in the menu, or opened from a link (#/storage/<account>). */
+function pickAccount(next: string): void {
+  account = next;
+  picked.clear();
+  void load();
+}
+
+/** The account named in the address, if it is connected. */
+function linkedAccount(args: string[] | undefined): string {
+  const want = decodeURIComponent(args?.[0] ?? "");
+  const accs = status()?.accounts ?? [];
+  return accs.includes(want) ? want : (accs[0] ?? "");
+}
+
 const storage: View = {
   subtitle: "Free up Google storage",
-  mount(el) {
-    account = status()?.accounts?.[0] ?? "";
+  mount(el, args) {
+    account = linkedAccount(args);
     shown = 50;
     el.innerHTML = `
     <section class="card mb-4 flex flex-wrap items-center gap-2 p-3">
-      <span class="flex items-center gap-2 px-1">${icon("users", "size-4 text-ink-3")}<span id="st-acc"></span></span>
+      <span id="st-acc" class="min-w-0"></span>
       <span class="text-xs text-ink-3 lg:ml-auto" id="st-when"></span>
       <button class="btn" id="st-refresh">${icon("refresh")}Refresh from Google</button>
     </section>
@@ -255,17 +307,13 @@ const storage: View = {
     el.addEventListener("click", onClick);
     el.addEventListener("change", (e) => {
       const t = e.target as HTMLInputElement;
-      if (t.id === "st-account") {
-        account = t.value;
-        picked.clear();
-        void load();
-      } else if (t.dataset.pick) {
+      if (t.dataset.pick) {
         if (t.checked) picked.add(t.dataset.pick);
         else picked.delete(t.dataset.pick);
         const btn = document.getElementById("st-picked") as HTMLButtonElement | null;
         if (btn) {
           btn.disabled = !picked.size;
-          btn.innerHTML = `${icon("sparkles")}Free picked (${picked.size})`;
+          btn.innerHTML = `${icon("check")}Picked (${picked.size})`;
         }
       }
     });
@@ -278,6 +326,10 @@ const storage: View = {
         r?.items.some((i) => ["queued", "downloaded", "checking"].includes(i.state));
       if (active || ++ticks % 8 === 0) void load(); // busy: every 4 s, else every 30 s
     }, 4000);
+  },
+  route(args) {
+    const next = linkedAccount(args);
+    if (next && next !== account) pickAccount(next);
   },
   unmount() {
     clearInterval(timer);

@@ -260,6 +260,8 @@ export interface Settings {
   undated: { album: boolean; name: string; asked: boolean };
   /** What to do in Google with items saved from apps (Sources page). */
   sources?: SourceSettings;
+  /** Copies between accounts are paused (read only: change it with copy/pause). */
+  copy_paused?: boolean;
 }
 export type SourceId =
   | "camera"
@@ -495,6 +497,8 @@ export interface StorageReport {
   /** GP Sync's own uploads found in the library, and how many of them count (should be 0). */
   ours: { seen: number; counted: number };
   freed: { count: number; bytes: number };
+  /** What counts against storage, photos and videos apart. */
+  kinds?: Record<"photo" | "video", { count: number; bytes: number }>;
   items: StorageItem[];
 }
 export interface CopyItem {

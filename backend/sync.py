@@ -602,6 +602,11 @@ def init_events():
         if days:
             sq(f"DELETE FROM {table} WHERE time < ?", (now - days * 86400,))
     sq("DELETE FROM samples WHERE minute < ?", (int(now // 60) - SAMPLE_DAYS * 1440,))
+    # Date fixes and freed storage used to be saved as plain uploads.
+    sq("UPDATE events SET kind='fixed' WHERE kind='uploaded' AND text LIKE 'Fixed the date of %'")
+    sq("UPDATE events SET kind='freed' WHERE kind='uploaded' AND text LIKE 'Freed %'")
+    sq("UPDATE events SET kind='deleted' WHERE kind='info' AND text LIKE 'Deleted % in Google Photos%'")
+    sq("UPDATE events SET kind='downloaded' WHERE kind='info' AND text LIKE 'Downloaded % from Google%'")
     with contextlib.suppress(OSError):
         clean_chunks()
 
@@ -616,6 +621,8 @@ def save_event(when, kind, text, name=None):
 
 EVENT_KINDS = {
     "uploaded": ("uploaded",),
+    # What GP Sync changed in Google Photos besides new uploads.
+    "google": ("fixed", "freed", "copied", "deleted", "downloaded"),
     "exists": ("exists",),
     "failed": ("failed", "error"),
     "system": ("scan", "info", "pause", "resume", "account", "album", "received"),
@@ -636,7 +643,7 @@ def _before(value):
 
 
 def activity(kind="all", query="", before=None, limit=100):
-    """Saved activity, newest first. `kind` is all, uploaded, exists, failed or system."""
+    """Saved activity, newest first. `kind` is all, uploaded, google, exists, failed or system."""
     where, args = [], []
     if kind in EVENT_KINDS:
         where.append(f"kind IN ({', '.join('?' * len(EVENT_KINDS[kind]))})")
@@ -2428,6 +2435,7 @@ def storage_report(account, limit=500):
         _b64_hash(bytes.fromhex(h)) for (h,) in q("SELECT sha1 FROM files WHERE sha1 != '' AND account=?", (account,))
     }
     items, counted, counted_bytes, total, ours_counted, ours_seen = [], 0, 0, 0, 0, 0
+    kinds = {k: {"count": 0, "bytes": 0} for k in RECLAIM_TYPES}
     for key, dedup, name, kind, size, quota, taken in rows or []:
         total += 1
         if dedup in ours:
@@ -2436,6 +2444,9 @@ def storage_report(account, limit=500):
         if quota:
             counted += 1
             counted_bytes += quota
+            k = kinds[RECLAIM_KINDS.get(kind, "photo")]
+            k["count"] += 1
+            k["bytes"] += quota
             items.append((key, dedup, name, RECLAIM_KINDS.get(kind, "photo"), size, quota, _seconds(taken)))
     listed = {i[0] for i in items}
     for key, dedup, name, kind, size, quota, taken, *_ in jobs.values():
@@ -2455,6 +2466,7 @@ def storage_report(account, limit=500):
         "total": total,
         "counted": counted,
         "counted_bytes": counted_bytes,
+        "kinds": kinds,
         "ours": {"seen": ours_seen, "counted": ours_counted},
         "freed": {"count": done[0], "bytes": done[1] or 0},
         "items": [
@@ -2473,13 +2485,34 @@ def storage_report(account, limit=500):
     }
 
 
+# Items Free storage may move: the account's own, counting against storage, not in the Trash or
+# the Locked folder.
+_MOVABLE = """quota_charged_bytes > 0 AND origin = 'self' AND COALESCE(trash_timestamp, 0) = 0
+              AND COALESCE(is_locked, 0) = 0"""
+RECLAIM_TYPES = {"photo": 1, "video": 2}
+
+
+def reclaim_queue_all(account, kind="all"):
+    """Queue everything that counts against storage: only photos, only videos, or both."""
+    if kind not in ("all", *RECLAIM_TYPES):
+        raise ValueError("kind must be photo, video or all")
+    where, args = _MOVABLE, ()
+    if kind != "all":
+        where += " AND type = ?"
+        args = (RECLAIM_TYPES[kind],)
+    keys = [k for (k,) in _library_rows(account, f"SELECT media_key FROM remote_media WHERE {where}", args) or []]
+    busy = {k for (k,) in q("SELECT media_key FROM reclaim WHERE account=? AND state NOT IN ('failed', 'cancelled')",
+                            (account,))}  # fmt: skip
+    return reclaim_queue(account, [k for k in keys if k not in busy])
+
+
 def reclaim_queue(account, keys):
     """Ask for items to be downloaded (biggest first, one at a time)."""
     wanted = set(keys)
     rows = _library_rows(
         account,
-        """SELECT media_key, dedup_key, file_name, type, size_bytes, quota_charged_bytes, utc_timestamp,
-                  is_favorite, is_archived, caption FROM remote_media WHERE quota_charged_bytes > 0""",
+        f"""SELECT media_key, dedup_key, file_name, type, size_bytes, quota_charged_bytes, utc_timestamp,
+                  is_favorite, is_archived, caption FROM remote_media WHERE {_MOVABLE}""",
     )
     n = 0
     for key, dedup, name, kind, size, quota, taken, fav, arch, cap in rows or []:
@@ -2675,7 +2708,7 @@ def reclaim_step(make_client=None, account=None):
                 path = _download(client_for(account), account, key, dedup, name, size, taken)
                 _set_reclaim(account, key, "downloaded", local=str(path))
                 track["error"] = ""
-                log(f"Downloaded {name} from Google ({fmt_bytes(size)})", "info")
+                log(f"Downloaded {name} from Google ({fmt_bytes(size)}) to free its storage", "downloaded")
                 return True  # one item per step: it is replaced in Google on the next call
             if st_ in ("downloaded", "in_google"):
                 if reclaim_blocked(account) or now - _reclaim_checked.get(key, 0) < 100:
@@ -2706,7 +2739,7 @@ def reclaim_step(make_client=None, account=None):
                     if not _delete_in_google(client, dedup):
                         _set_reclaim(account, key, "in_google", "Google hasn't deleted it yet: trying again soon")
                         continue
-                    log(f"Deleted {name} in Google Photos to upload it again for free", "info")
+                    log(f"Deleted {name} in Google Photos ({account}) to upload it again for free", "deleted")
                 track["current"] = {"key": key, "step": "uploading", "done": 0, "total": size, "name": name}
                 result = _reupload(client, Path(local), dedup, size, key, track, when=taken)
                 if result is None:
@@ -2735,7 +2768,7 @@ def reclaim_step(make_client=None, account=None):
                     continue
                 shutil.rmtree(Path(local).parent, ignore_errors=True)
                 _set_reclaim(account, key, "done", local="")
-                log(f"Freed {fmt_bytes(size)} of Google storage: {name}", "uploaded")
+                log(f"Freed {fmt_bytes(size)} of Google storage: re-uploaded {name} for free ({account})", "freed")
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"[:300]
             print(f"Free storage: {name}: {msg}", file=sys.stderr, flush=True)
@@ -3396,6 +3429,11 @@ def datefix_step(make_client=None, only=None):
                 if not _delete_in_google(client, _b64_hash(digest)):
                     _set_fix(path, "in_google", "Google hasn't deleted it yet: trying again soon")
                     continue
+                log(
+                    f"Deleted {name} in Google Photos ({account}) to upload it again with the right date",
+                    "deleted",
+                    name,
+                )
             when = best_date(path, size, mtime, sha1, fingerprint=False)[0]
             track["current"] = {"key": name, "step": "uploading", "done": 0, "total": size}
             key = _reupload(client, Path(path), _b64_hash(digest), size, name, track, when=when)
@@ -3409,7 +3447,11 @@ def datefix_step(make_client=None, only=None):
             if (album := album_name(path, get_settings()["albums"])) is not None:
                 add_to_album(client, account, album, [key])
             track["error"] = ""
-            log(f"Fixed the date of {name}: {time.strftime('%Y-%m-%d %H:%M', time.gmtime(when))} UTC", "uploaded", name)
+            log(
+                f"Fixed the date of {name}: re-uploaded dated {time.strftime('%Y-%m-%d %H:%M', time.gmtime(when))} UTC",
+                "fixed",
+                name,
+            )
             did = True
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"[:300]
@@ -4030,9 +4072,11 @@ def copy_step(make_client=None, pair=None):
         new_key = _reupload(target, path, dedup, size, key, track, when=taken)
         if new_key is None:
             _set_copy(src, dst, key, "exists")
+            log(f"Already in {dst}: {name}", "exists")
         else:
             _restore_details(target, dedup, fav, arch, cap)
             _set_copy(src, dst, key, "copied", new_key=new_key)
+            log(f"Copied {name} from {src} to {dst} ({fmt_bytes(size)})", "copied")
             try:  # the copy is made: a failed check is tried again later, it doesn't fail the copy
                 _verify_copies(target, src, dst)
             except Exception as e:
@@ -4642,7 +4686,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/totals":
             self.cached("totals", 60, totals)
         elif path == "/api/settings":
-            self.json(public_settings())
+            self.json({**public_settings(), "copy_paused": meta_get("copy_paused") == "1"})
         elif path == "/api/files":
             args = (
                 arg("q", ""),
@@ -4855,7 +4899,13 @@ class Handler(BaseHTTPRequestHandler):
                 reclaim_wake.set()
                 self.json({"ok": True})
             elif path == "/api/storage/download":
-                self.json(reclaim_queue(account, keys))
+                if req.get("kind") and not keys:  # everything of a kind (photo, video or all)
+                    try:
+                        self.json(reclaim_queue_all(account, str(req["kind"])))
+                    except ValueError as e:
+                        self.json({"error": str(e)}, 400)
+                else:
+                    self.json(reclaim_queue(account, keys))
             elif path == "/api/storage/cancel":
                 self.json(reclaim_cancel(account, keys))
             elif path == "/api/storage/check":

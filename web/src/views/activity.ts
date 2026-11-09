@@ -9,6 +9,7 @@ import type { View } from "./view";
 const FILTERS: [string, string, string][] = [
   ["all", "All", "layers"],
   ["uploaded", "Uploaded", "cloudUp"],
+  ["google", "Google changes", "sparkles"],
   ["exists", "Already in Google", "verified"],
   ["failed", "Problems", "warn"],
   ["system", "System", "settings"],

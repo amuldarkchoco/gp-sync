@@ -145,6 +145,11 @@ export function kindIcon(name: string): IconName {
 
 export const eventMeta: Record<string, { tone: Tone; icon: IconName; label: string }> = {
   uploaded: { tone: "good", icon: "cloudUp", label: "Uploaded" },
+  fixed: { tone: "good", icon: "calendar", label: "Date fixed" },
+  freed: { tone: "good", icon: "sparkles", label: "Re-uploaded free" },
+  copied: { tone: "good", icon: "copy", label: "Copied" },
+  deleted: { tone: "warn", icon: "trash", label: "Deleted in Google" },
+  downloaded: { tone: "info", icon: "download", label: "Downloaded" },
   exists: { tone: "info", icon: "verified", label: "Already in Google" },
   failed: { tone: "bad", icon: "error", label: "Failed" },
   error: { tone: "bad", icon: "warn", label: "Error" },

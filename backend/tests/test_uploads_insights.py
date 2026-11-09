@@ -224,3 +224,21 @@ def test_manifest_can_receive_shared_photos(server):
         m = json.load(r)
     assert m["share_target"]["params"]["files"][0]["name"] == "media"
     assert os.path.exists(sync.STATIC_DIR / "sw.js")
+
+
+def test_old_activity_is_relabelled():
+    sync.sq("DELETE FROM events")
+    for text, kind in (
+        ("Fixed the date of a.jpg: 2026-10-28 15:49 UTC", "uploaded"),
+        ("Freed 3 MB of Google storage: b.jpg", "uploaded"),
+        ("Uploaded c.jpg (1 MB in 2s)", "uploaded"),
+        ("Deleted b.jpg in Google Photos to upload it again for free", "info"),
+    ):
+        sync.save_event(time.time(), kind, text)
+    sync.init_events()
+    assert [k for (k,) in sync.sq("SELECT kind FROM events ORDER BY rowid")] == [
+        "fixed",
+        "freed",
+        "uploaded",
+        "deleted",
+    ]

@@ -1,16 +1,16 @@
-import { get, post, type Settings, type Status } from "../lib/api";
+import { get, post, type AppSourceId, type Settings, type Status } from "../lib/api";
 import { $, $$, copyText, esc, html, toast } from "../lib/dom";
 import { bytes, hour, num } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
-import { capabilities, install, installHelp, installState, onInstallChange } from "../lib/install";
+import { install, installHelp, installState, onInstallChange } from "../lib/install";
 import { host, refresh, status } from "../lib/store";
 import { setTheme, theme as currentTheme } from "../lib/theme";
-import { glassToggle, wireGlassToggles } from "../lib/glass-toggle";
+import { avatar } from "../lib/account-menu";
 import { badge, cardHead, syncChips } from "../lib/ui";
 import type { View } from "./view";
 
-// [key, title, icon, short line for the menu, icon tile color (iOS system colors), page intro]
-const SECTIONS: [string, string, IconName, string, string, string][] = [
+// [key, title, icon, short line for the menu, icon tile color (iOS system colors), page intro, group]
+const SECTIONS: [string, string, IconName, string, string, string, string][] = [
   [
     "sync",
     "Sync",
@@ -18,14 +18,7 @@ const SECTIONS: [string, string, IconName, string, string, string][] = [
     "Pause, hours and speed",
     "#0a84ff",
     "Pause backups, choose upload hours and limit the upload speed.",
-  ],
-  [
-    "accounts",
-    "Google accounts",
-    "users",
-    "Connect and remove",
-    "#5e5ce6",
-    "Connect up to 5 Google accounts. Removing one keeps its photos in Google Photos.",
+    "Backup",
   ],
   [
     "folders",
@@ -34,14 +27,61 @@ const SECTIONS: [string, string, IconName, string, string, string][] = [
     "What is backed up where",
     "#ff9f0a",
     "Choose which folders are backed up, and to which accounts.",
+    "Backup",
+  ],
+  [
+    "accounts",
+    "Google accounts",
+    "users",
+    "Connect and manage",
+    "#5e5ce6",
+    "Connect up to 5 Google accounts and run account work on several at once.",
+    "Backup",
   ],
   [
     "albums",
-    "Albums & duplicates",
+    "Albums",
     "library",
-    "Organise in Google Photos",
+    "Albums from folders",
     "#ff375f",
-    "Sort uploads into Google Photos albums and find files you have twice.",
+    "Put new uploads into Google Photos albums named after their folders.",
+    "Google Photos",
+  ],
+  [
+    "dates",
+    "Dates",
+    "calendar",
+    "Photos without a date",
+    "#ff9f0a",
+    "Some photos and videos carry no date. Choose how GP Sync dates and groups them.",
+    "Google Photos",
+  ],
+  [
+    "sources",
+    "Sources",
+    "layers",
+    "Saved from apps",
+    "#30b0c7",
+    "What GP Sync does in Google Photos with items saved from Snapchat, Instagram and other apps.",
+    "Google Photos",
+  ],
+  [
+    "duplicates",
+    "Duplicates",
+    "copy",
+    "Files you have twice",
+    "#34c759",
+    "Find files you have more than once, here and in Google Photos.",
+    "Google Photos",
+  ],
+  [
+    "tools",
+    "Google tools",
+    "sparkles",
+    "Storage, dates, copies",
+    "#5e5ce6",
+    "Work GP Sync does inside your Google accounts. Each account works on its own, side by side.",
+    "Google Photos",
   ],
   [
     "alerts",
@@ -50,14 +90,16 @@ const SECTIONS: [string, string, IconName, string, string, string][] = [
     "ntfy and Telegram",
     "#ff453a",
     "Get a message on your phone through ntfy or Telegram when something needs you.",
+    "App",
   ],
   [
     "app",
-    "App & appearance",
+    "Appearance",
     "palette",
     "Theme and install",
     "#bf5af2",
-    "Choose how GP Sync looks and add it to your home screen.",
+    "How GP Sync looks, and GP Sync as an app.",
+    "App",
   ],
   [
     "api",
@@ -66,6 +108,7 @@ const SECTIONS: [string, string, IconName, string, string, string][] = [
     "JSON endpoints",
     "#8e8e93",
     "Read status and statistics as JSON, with the same login as the dashboard.",
+    "App",
   ],
 ];
 
@@ -96,6 +139,17 @@ async function save(changes: Partial<Settings> | Record<string, unknown>, messag
     cfg = r.settings;
     toast(message, "good");
     void refresh();
+  } catch (e) {
+    toast((e as Error).message, "bad");
+  }
+}
+
+/** Sources settings have their own endpoint (it starts the work in Google Photos). */
+async function saveSources(changes: Record<string, unknown>, message = "Saved"): Promise<void> {
+  try {
+    const r = await post<{ settings: Settings["sources"] }>("sources/settings", { settings: changes });
+    if (cfg) cfg.sources = r.settings;
+    if (message) toast(message, "good");
   } catch (e) {
     toast((e as Error).message, "bad");
   }
@@ -188,34 +242,93 @@ function sectionSync(s: Status | null): string {
   </div>`;
 }
 
+/** What to give Claude Code, Codex or another coding assistant on the computer the phone is plugged into. */
+const AUTH_PROMPT = `Help me get the Google Photos login text for GP Sync from my Android phone.
+
+My phone is connected to this computer by USB, with USB debugging turned on (Settings > Developer options). It has GmsCore (microG) and Google Photos ReVanced installed.
+
+1. Make sure adb works (install Android platform-tools if it is missing) and run "adb devices". If the phone shows as "unauthorized", tell me to accept the prompt on the phone, then check again.
+2. Check both apps are installed: adb shell pm list packages | grep -i -E "revanced|microg|gms". If one is missing, tell me which and stop.
+3. Clear the log with "adb logcat -c", then watch it: adb logcat | grep "auth%2Fphotos.native"
+4. Tell me to open Google Photos ReVanced and sign in with the Google account I want to add (or sign out and in again).
+5. From the first matching line, take everything from "androidId=" to the end of the line, exactly as it is, and show it to me in one code block.
+
+This text is a login to my Google account: don't save it to a file or send it anywhere else.`;
+
+function accountFolders(s: Status | null, a: string): string[] {
+  return Object.entries(s?.folders ?? {})
+    .filter(([, f]) => (f.accounts ?? (f.account ? [f.account] : [])).includes(a))
+    .map(([name]) => name);
+}
+
 function sectionAccounts(s: Status | null): string {
   const accs = s?.accounts ?? [];
-  return `<div class="grid grid-cols-1 items-start gap-4 xl:grid-cols-2">
-    <section class="card">${cardHead("Connected", "users", badge(`${accs.length} of ${s?.max_accounts ?? 5}`, accs.length ? "good" : "warn"))}
-      ${
-        accs.length
-          ? accs
-              .map(
-                (
-                  a,
-                  i,
-                ) => `<div class="row"><span class="grid size-9 place-items-center rounded-full bg-panel-2 font-semibold uppercase">${esc(a[0])}</span><div class="min-w-0 flex-1"><div class="truncate text-sm font-medium">${esc(a)}</div><div class="flex gap-1 pt-0.5">${i === 0 && accs.length > 1 ? badge("Default for new folders", "info") : ""}${s?.login_failed.includes(a) ? badge("Login rejected", "bad", "warn") : badge("Working", "good", "ok")}</div></div>
-                <button class="btn sm danger" data-remove="${esc(a)}">${icon("trash")}Remove</button></div>`,
-              )
-              .join("")
-          : `<div class="empty">${icon("key")}No account yet</div>`
-      }
-    </section>
-    <section class="card">${cardHead(accs.length >= (s?.max_accounts ?? 5) ? "Replace an account's login" : accs.length ? "Add or replace an account" : "Connect an account", "plus")}
-      <div class="card-b space-y-3 text-sm">
-        <ol class="space-y-2 text-ink-2">
-          <li class="flex gap-2"><span class="badge info">1</span><span>Install <b>GmsCore</b> and <b>Google Photos ReVanced</b> on an Android phone.</span></li>
-          <li class="flex gap-2"><span class="badge info">2</span><span>Connect it to a computer and run <code class="rounded bg-panel-2 px-1">adb logcat | grep "auth%2Fphotos.native"</code></span></li>
-          <li class="flex gap-2"><span class="badge info">3</span><span>Sign in to Google Photos ReVanced, then copy the text from <code class="rounded bg-panel-2 px-1">androidId=</code> to the end of the line.</span></li>
-        </ol>
-        <textarea class="input" id="set-auth" rows="4" placeholder="androidId=…"></textarea>
-        <div class="flex items-center justify-between gap-2"><span class="flex items-center gap-1.5 text-xs text-ink-3">${icon("lock", "size-3.5")}Stored only on ${esc(host())}, readable by this app only.</span><button class="btn primary" id="set-connect">${icon("key")}Connect</button></div>
-      </div></section>
+  const max = s?.max_accounts ?? 5;
+  const full = accs.length >= max;
+  const list = accs.length
+    ? accs
+        .map((a, i) => {
+          const folders = accountFolders(s, a);
+          const bad = s?.login_failed.includes(a);
+          const sub = [
+            i === 0 && accs.length > 1 ? "Main" : "",
+            folders.length ? folders.join(", ") : "No folders yet",
+          ].filter(Boolean);
+          return `<div class="row flex-wrap py-3">${avatar(a, "size-9")}
+            <div class="min-w-0 flex-1"><div class="truncate text-sm font-medium">${esc(a)}</div><div class="truncate text-xs text-ink-3">${esc(sub.join(" · "))}</div></div>
+            ${bad ? badge("Login rejected", "bad", "warn") : badge("Working", "good", "ok")}
+            <div class="row-actions flex w-full items-center justify-end gap-1.5 sm:w-auto">
+              <a class="btn sm" href="#/storage/${encodeURIComponent(a)}">${icon("cloud")}Storage</a>
+              <a class="btn sm" href="#/dates/${encodeURIComponent(a)}">${icon("calendar")}Dates</a>
+              <button class="btn icon sm danger" data-remove="${esc(a)}" aria-label="Remove ${esc(a)}" title="Remove">${icon("trash")}</button>
+            </div></div>`;
+        })
+        .join("")
+    : `<div class="empty">${icon("key")}No account yet</div>`;
+  const steps: [string, string][] = [
+    ["1", "Install <b>GmsCore</b> and <b>Google Photos ReVanced</b> on an Android phone."],
+    [
+      "2",
+      `Plug it into a computer and run <code class="rounded bg-panel-2 px-1">adb logcat | grep "auth%2Fphotos.native"</code>`,
+    ],
+    [
+      "3",
+      'Sign in to Google Photos ReVanced and copy from <code class="rounded bg-panel-2 px-1">androidId=</code> to the end of the line.',
+    ],
+  ];
+  const actionsList: [string, IconName, string, string][] = [
+    ["login", "key", "Check login", ""],
+    ["library", "refresh", "Read library", ""],
+    ["dates", "calendar", "Check dates", ""],
+    ["retry", "retry", "Retry fixes", ""],
+  ];
+  return `<div class="flex flex-col gap-4">
+    <section class="card">${cardHead("Connected", "users", badge(`${accs.length} of ${max}`, accs.length ? "good" : "warn"))}${list}</section>
+    ${
+      accs.length
+        ? `<section class="card">${cardHead("Manage", "sliders", accs.length > 1 ? `<button type="button" class="link-btn" id="mg-all">Select all</button>` : "")}
+      <div class="card-b space-y-4">
+        <div class="flex flex-wrap gap-1.5" id="mg-accs">${accs.map((a) => `<button type="button" class="chip" data-acc="${esc(a)}" aria-pressed="${accs.length === 1}">${icon("ok", "size-3.5")}${esc(a)}</button>`).join("")}</div>
+        <div class="grid grid-cols-2 gap-2 lg:grid-cols-4" id="mg-actions">${actionsList.map(([k, ic, l, cls]) => `<button type="button" class="btn justify-center whitespace-nowrap ${cls}" data-act="${k}">${icon(ic)}${l}</button>`).join("")}</div>
+        <div class="space-y-1 empty:hidden" id="mg-out"></div>
+      </div>
+      <div class="flex items-center justify-between gap-3 border-t border-line px-4 py-3"><span class="text-xs text-ink-3">Removing keeps the photos in Google Photos.</span><button type="button" class="btn sm danger shrink-0" data-act="remove" id="mg-remove">${icon("trash")}Remove</button></div></section>`
+        : ""
+    }
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <section class="card flex flex-col">${cardHead(full ? "Replace a login" : "Add an account", "plus")}
+        <div class="card-b flex flex-1 flex-col gap-3 text-sm">
+          <ol class="space-y-2 text-ink-2">${steps.map(([n, t]) => `<li class="flex gap-2"><span class="badge info">${n}</span><span>${t}</span></li>`).join("")}</ol>
+          <textarea class="input" id="set-auth" rows="3" placeholder="androidId=…"></textarea>
+          <div class="mt-auto flex items-center justify-between gap-2"><span class="flex min-w-0 items-center gap-1.5 text-xs text-ink-3">${icon("lock", "size-3.5 shrink-0")}<span class="truncate">Stays on ${esc(host())}</span></span><button class="btn primary shrink-0" id="set-connect">${icon("key")}Connect</button></div>
+        </div></section>
+      <section class="card flex flex-col">${cardHead("Let an AI assistant do it", "sparkles")}
+        <div class="card-b flex flex-1 flex-col gap-3 text-sm">
+          <p class="text-ink-2">Paste this into Claude Code, Codex or a similar assistant on the computer your phone is plugged into. It runs the steps and hands you the <code class="rounded bg-panel-2 px-1">androidId=</code> line.</p>
+          <pre class="prompt-box" id="set-prompt">${esc(AUTH_PROMPT)}</pre>
+          <div class="mt-auto flex items-center justify-between gap-2"><span class="flex min-w-0 items-center gap-1.5 text-xs text-ink-3">${icon("warn", "size-3.5 shrink-0")}<span class="truncate">The line is a login</span></span><button class="btn shrink-0 whitespace-nowrap" id="set-copy-prompt">${icon("copy")}Copy prompt</button></div>
+        </div></section>
+    </div>
   </div>`;
 }
 
@@ -255,31 +368,158 @@ function sectionFolders(s: Status | null): string {
 
 function sectionAlbums(): string {
   const opts: [string, string, string][] = [
-    ["off", "No albums", "Files are only added to the Google Photos library."],
-    ["top", "First folder", "Photos/Goa Trip/… → album “Goa Trip”."],
-    ["parent", "Folder of each file", "Photos/2024/Goa/… → album “Goa”."],
+    ["off", "No albums", "Only added to the library."],
+    ["top", "First folder", "Photos/Goa Trip/… → “Goa Trip”"],
+    ["parent", "Each file's folder", "Photos/2024/Goa/… → “Goa”"],
   ];
-  return `<div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-    <section class="card">${cardHead("Albums", "library")}
-      <div class="card-b space-y-2" id="set-albums">${opts
+  return `<div class="flex flex-col gap-4">
+    <section class="card">${cardHead("Folder albums", "library")}
+      <div class="card-b grid grid-cols-1 gap-2 sm:grid-cols-3" id="set-albums">${opts
         .map(
           ([
             k,
             l,
             d,
           ]) => `<label class="flex cursor-pointer items-start gap-3 rounded-xl border border-line p-3 has-[:checked]:border-accent has-[:checked]:bg-accent/10">
-          <input type="radio" name="albums" value="${k}" class="mt-1 accent-[var(--accent)]" ${cfg?.albums === k ? "checked" : ""}><span><span class="block text-sm font-medium">${l}</span><span class="text-xs text-ink-3">${d}</span></span></label>`,
+          <input type="radio" name="albums" value="${k}" class="mt-1 accent-[var(--accent)]" ${cfg?.albums === k ? "checked" : ""}><span class="min-w-0"><span class="block text-sm font-medium">${l}</span><span class="block text-xs text-ink-3">${d}</span></span></label>`,
         )
         .join("")}
       </div></section>
-    <section class="card">${cardHead("Photos and videos without a date", "calendar")}
-      <div class="card-b space-y-3">${toggleRow("set-undated", "Put them in their own album", "Snapchat saves, screenshots and chat pictures have no date inside, so Google Photos dates them by the upload. Keep them together in one album.", cfg?.undated?.album ?? true)}
-        ${field("Album name", `<input class="input" id="set-undated-name" maxlength="80" value="${esc(cfg?.undated?.name ?? "Date unknown")}">`, "Files already uploaded are added too. A new name starts a new album; the old one stays in Google Photos.")}
-        <a href="#/dates" class="btn">${icon("clock")}Fix dates</a></div></section>
-    <section class="card">${cardHead("Duplicates", "copy")}
-      <div class="card-b">${toggleRow("set-hash", "Check older uploads for duplicates", "Fingerprints files while the app is idle. See Library › Duplicates.", !!cfg?.hash_existing)}
-      <a href="#/library/duplicates" class="btn mt-3">${icon("copy")}Open duplicates</a></div></section>
-    ${actions("Albums are created the first time and reused after that. Folder albums apply to new uploads only.", `<button class="btn primary" id="set-save-albums">${icon("ok")}Save</button>`)}
+    ${actions("Albums are made once and reused. Applies to new uploads.", `<button class="btn primary" id="set-save-albums">${icon("ok")}Save</button>`)}
+  </div>`;
+}
+
+function sectionDates(): string {
+  const steps: [IconName, string, string][] = [
+    [
+      "photo",
+      "No date inside",
+      "Snapchat saves, screenshots and chat pictures often carry no date of their own.",
+    ],
+    ["warn", "Google guesses", "Google Photos then dates them by the upload, so they land on the wrong day."],
+    [
+      "sparkles",
+      "GP Sync helps",
+      "It sends a better date when it can, keeps them in one album, and fixes ones already uploaded.",
+    ],
+  ];
+  return `<div class="flex flex-col gap-4">
+    <section class="card">${cardHead("Why some photos have no date", "info")}
+      <div class="card-b grid grid-cols-1 gap-3 sm:grid-cols-3">${steps
+        .map(
+          ([ic, t, d]) =>
+            `<div class="stat-tile"><div class="flex items-center gap-2 text-sm font-medium">${icon(ic, "size-4 text-accent")}${t}</div><div class="text-xs text-ink-3">${d}</div></div>`,
+        )
+        .join("")}</div></section>
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <section class="card flex flex-col">${cardHead("“Date unknown” album", "library", sw("set-undated", cfg?.undated?.album ?? true))}
+        <div class="card-b flex flex-1 flex-col gap-3">
+          <p class="text-sm text-ink-2">Every photo and video without a date goes into one album, so they are easy to find and check. Turned off, nothing new is added and the album stays as it is.</p>
+          ${field("Album name", `<input class="input" id="set-undated-name" maxlength="80" value="${esc(cfg?.undated?.name ?? "Date unknown")}">`)}
+        </div></section>
+      <section class="card flex flex-col">${cardHead("Estimate Snapchat dates", "clock", sw("set-estimate", cfg?.sources?.estimate_dates ?? true))}
+        <div class="card-b flex flex-1 flex-col gap-3">
+          <p class="text-sm text-ink-2">Snapchat saves get an estimated date, worked out from your own camera photos. Dates in file names (WhatsApp, screenshots) are always used.</p>
+          <p class="text-xs text-ink-3">For new uploads. Items already in Google change only in Fix dates.</p>
+          <a href="#/dates" class="btn mt-auto self-start">${icon("calendar")}Open Fix dates</a>
+        </div></section>
+    </div>
+    ${actions("A new album name starts a new album; the old one stays in Google Photos.", `<button class="btn primary" id="set-save-dates">${icon("ok")}Save</button>`)}
+  </div>`;
+}
+
+const APP_SOURCES: [AppSourceId, string][] = [
+  ["snapchat", "Snapchat"],
+  ["instagram", "Instagram"],
+  ["tiktok", "TikTok"],
+  ["whatsapp", "WhatsApp"],
+  ["telegram", "Telegram"],
+  ["screenshot", "Screenshots"],
+  ["app_export", "Saved from apps"],
+];
+
+function sectionSources(): string {
+  const src = cfg?.sources;
+  if (!src) return `<div class="card empty">${icon("layers")}Not available</div>`;
+  const swc = (id: string, on: boolean, label: string) =>
+    `<button type="button" role="switch" class="switch" id="${id}" aria-checked="${on}" aria-label="${label}"></button>`;
+  const rows = APP_SOURCES.map(([id, label]) => {
+    const a = src[id];
+    return `<div class="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-4 gap-y-2 border-b border-line px-4 py-3 last:border-b-0 md:grid-cols-[9rem_minmax(0,1fr)_4.5rem_4.5rem_4.5rem]" data-src="${id}">
+      <span class="col-span-4 text-sm font-medium md:col-span-1">${label}</span>
+      <input class="input h-9 text-sm" data-set="album_name" maxlength="80" value="${esc(a.album_name)}" aria-label="${label} album name">
+      <span class="grid justify-items-center">${swc(`src-${id}-album`, a.album, `${label}: album`)}</span>
+      <span class="grid justify-items-center">${swc(`src-${id}-caption`, a.caption, `${label}: caption`)}</span>
+      <span class="grid justify-items-center">${swc(`src-${id}-archive`, a.archive, `${label}: archive`)}</span>
+    </div>`;
+  }).join("");
+  return `<div class="flex flex-col gap-4">
+    <section class="card">${cardHead("Items saved from apps", "layers", `<a class="link-btn" href="#/sources">Open Sources</a>`)}
+      <div class="hidden grid-cols-[9rem_minmax(0,1fr)_4.5rem_4.5rem_4.5rem] gap-x-4 border-b border-line px-4 py-2 text-xs font-medium text-ink-3 md:grid">
+        <span>App</span><span>Album name</span><span class="text-center">Album</span><span class="text-center">Caption</span><span class="text-center">Archive</span></div>
+      <div class="flex justify-end gap-x-4 border-b border-line px-4 py-2 text-xs font-medium text-ink-3 md:hidden"><span class="w-11 text-center">Album</span><span class="w-11 text-center">Caption</span><span class="w-11 text-center">Archive</span></div>
+      ${rows}
+      <div class="grid grid-cols-1 gap-2 border-t border-line p-4 text-xs text-ink-3 sm:grid-cols-3">
+        <span><b class="text-ink-2">Album</b> groups them in Google Photos.</span>
+        <span><b class="text-ink-2">Caption</b> makes them searchable. Yours are never replaced.</span>
+        <span><b class="text-ink-2">Archive</b> hides them from the timeline. Off undoes it.</span>
+      </div></section>
+    ${actions("Nothing changes in Google until you save.", `<button class="btn primary" id="set-save-sources">${icon("ok")}Save</button>`)}
+  </div>`;
+}
+
+function sectionDuplicates(): string {
+  return `<div class="flex flex-col gap-4">
+    <section class="card">${cardHead("Check older uploads", "copy", sw("set-hash", !!cfg?.hash_existing))}
+      <div class="card-b flex flex-col gap-3 sm:flex-row sm:items-center">
+        <p class="flex-1 text-sm text-ink-2">New files are always checked. With this on, files uploaded before are fingerprinted too, while the app is idle, so every copy you have twice shows up.</p>
+        <a href="#/library/duplicates" class="btn shrink-0 self-start sm:self-center">${icon("copy")}Open duplicates</a>
+      </div></section>
+    ${actions("Fingerprinting reads files only; nothing is deleted.", `<button class="btn primary" id="set-save-dups">${icon("ok")}Save</button>`)}
+  </div>`;
+}
+
+function sectionTools(): string {
+  const tools: [IconName, string, string, string, string][] = [
+    [
+      "cloud",
+      "Free storage",
+      "Items that count against your Google storage are downloaded, checked, deleted in Google and uploaded again for free. Photos, videos or both.",
+      "#/storage",
+      "",
+    ],
+    [
+      "calendar",
+      "Fix dates",
+      "Items Google dated by their upload are replaced with ones carrying the right date. Only when the file here is unchanged.",
+      "#/dates",
+      "",
+    ],
+    [
+      "users",
+      "Copy accounts",
+      "Copy photos and videos from one Google account to another, in original quality, with dates.",
+      "#/copy",
+      sw("set-copy-run", !cfg?.copy_paused),
+    ],
+  ];
+  return `<div class="flex flex-col gap-4">
+    <section class="card">${cardHead("Tools", "sparkles")}${tools
+      .map(
+        ([
+          ic,
+          t,
+          d,
+          href,
+          extra,
+        ]) => `<div class="flex flex-col gap-3 border-b border-line px-4 py-4 last:border-b-0 sm:flex-row sm:items-center">
+          <span class="grid size-10 shrink-0 place-items-center rounded-xl bg-panel-2 text-accent">${icon(ic)}</span>
+          <div class="min-w-0 flex-1"><div class="text-sm font-medium">${t}</div><div class="text-xs text-ink-3">${d}</div>${extra ? `<div class="mt-1 text-xs text-ink-2" id="set-copy-note">${cfg?.copy_paused ? "Paused: nothing is copied." : "Running."}</div>` : ""}</div>
+          <div class="flex shrink-0 items-center gap-3">${extra}<a href="${href}" class="btn sm whitespace-nowrap">Open${icon("chevron")}</a></div>
+        </div>`,
+      )
+      .join("")}</section>
+    <section class="card flex items-start gap-3 p-4 text-sm text-ink-2">${icon("info", "size-5 shrink-0 text-ink-3")}<div>Kept: quality, date, favourite, archive and caption. Lost: albums made by hand, shared links and comments. Run work for several accounts at once from <a class="underline" href="#/settings/accounts">Google accounts › Manage</a>.</div></section>
   </div>`;
 }
 
@@ -338,9 +578,9 @@ function themeMock(kind: "dark" | "light"): string {
 }
 
 function themeNote(t: string): string {
-  if (t !== "system") return "Saved in this browser.";
+  if (t !== "system") return "This browser";
   const dark = !matchMedia("(prefers-color-scheme: light)").matches;
-  return `Follows this device, now <b>${dark ? "dark" : "light"}</b>. Saved in this browser.`;
+  return `Following this device: ${dark ? "dark" : "light"}`;
 }
 
 // The header switch also picks light or dark: show that choice here when the page is open.
@@ -364,38 +604,34 @@ function sectionApp(): string {
     ["dark", "Dark", "moon", themeMock("dark")],
     ["light", "Light", "sun", themeMock("light")],
   ];
-  const caps = capabilities();
-  const ready = caps.filter((c) => c.ok).length;
   const state = installState();
-  return `<div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-    <section class="card xl:col-span-2">${cardHead("Theme", "palette")}
+  const signIn = !!status()?.auth;
+  return `<div class="flex flex-col gap-4">
+    <section class="card">${cardHead("Theme", "palette", `<span id="set-theme-note">${themeNote(theme)}</span>`)}
       <div class="card-b">
-        <div class="mb-5 flex items-center gap-4">${glassToggle("lg")}<span class="text-sm text-ink-3">Tap or drag</span></div>
         <div class="grid grid-cols-3 gap-3 sm:gap-4" id="set-theme" role="radiogroup" aria-label="Theme">${opts
           .map(
             ([k, l, ic, mock]) =>
               `<button type="button" class="theme-opt" role="radio" data-t="${k}" aria-checked="${k === theme}"><span class="theme-prev">${mock}<span class="theme-check">${icon("check")}</span></span><span class="theme-label">${icon(ic)}${l}</span></button>`,
           )
           .join("")}</div>
-        <p class="mt-3 text-xs text-ink-3" id="set-theme-note">${themeNote(theme)}</p>
       </div></section>
-    <section class="card xl:col-span-2">${cardHead("Install as an app", "download", installBadge())}
-      <div class="card-b grid grid-cols-1 gap-4 text-sm text-ink-2 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:items-center">
-        <div class="flex items-start gap-3">${tileIcon("phone", "#0a84ff", "lg")}<div class="min-w-0"><div class="font-medium text-ink">GP Sync on your home screen</div><p class="text-xs text-ink-3">Full screen, and upload straight from your phone.</p>${state === "ready" ? `<button class="btn primary mt-3" id="set-install">${icon("download")}Install now</button>` : ""}</div></div>
-        <div class="install-help" id="set-install-help">${installHelp()}</div>
-      </div></section>
-    <section class="card xl:col-span-2">${cardHead("What works on this device", "devices", badge(`${ready} of ${caps.length}`, ready === caps.length ? "good" : "info"))}
-      <ul class="cap-list">${caps
-        .map(
-          (c) =>
-            `<li class="cap ${c.ok ? "ok" : "no"}"><span class="cap-ic">${icon(c.ok ? "check" : "x")}</span><div class="min-w-0"><div class="text-sm font-medium ${c.ok ? "" : "text-ink-2"}">${esc(c.label)}</div><div class="text-xs text-ink-3">${esc(c.note)}</div></div></li>`,
-        )
-        .join("")}</ul></section>
-    ${
-      status()?.auth
-        ? `<section class="card xl:col-span-2">${cardHead("Sign-in", "lock")}<form class="card-b flex flex-wrap items-center justify-between gap-3" method="post" action="logout"><span class="text-sm text-ink-2">Signing out here doesn't affect other devices.</span><button class="btn danger" type="submit">${icon("logout")}Sign out</button></form></section>`
-        : ""
-    }
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <section class="card flex flex-col ${signIn ? "" : "md:col-span-2"}">${cardHead("Install as an app", "download", installBadge())}
+        <div class="card-b flex flex-1 flex-col gap-3 text-sm text-ink-2">
+          <div class="install-help" id="set-install-help">${installHelp()}</div>
+          ${state === "ready" ? `<button class="btn primary mt-auto self-start" id="set-install">${icon("download")}Install</button>` : ""}
+        </div></section>
+      ${
+        signIn
+          ? `<section class="card flex flex-col">${cardHead("Sign-in", "lock")}
+        <form class="card-b flex flex-1 flex-col gap-3 text-sm text-ink-2" method="post" action="logout">
+          <p>Signing out here doesn't sign out other devices.</p>
+          <button class="btn danger mt-auto self-start" type="submit">${icon("logout")}Sign out</button>
+        </form></section>`
+          : ""
+      }
+    </div>
   </div>`;
 }
 
@@ -451,6 +687,10 @@ function renderSection(): void {
     accounts: () => sectionAccounts(s),
     folders: () => sectionFolders(s),
     albums: sectionAlbums,
+    dates: sectionDates,
+    sources: sectionSources,
+    duplicates: sectionDuplicates,
+    tools: sectionTools,
     alerts: sectionAlerts,
     app: sectionApp,
     api: sectionApi,
@@ -462,6 +702,74 @@ function renderSection(): void {
     .querySelector<HTMLElement>(`.set-tabs [data-sec="${key}"]`)
     ?.scrollIntoView({ block: "nearest", inline: "center" });
   wire();
+}
+
+/** Manage: run one action on each chosen account, and list how it went. */
+function wireManage(): void {
+  const box = document.getElementById("mg-accs");
+  if (!box) return;
+  const chips = () => $$<HTMLButtonElement>(".chip", box);
+  chips().forEach((c) =>
+    c.addEventListener("click", () =>
+      c.setAttribute("aria-pressed", String(c.getAttribute("aria-pressed") !== "true")),
+    ),
+  );
+  document.getElementById("mg-all")?.addEventListener("click", () => {
+    const all = chips().every((c) => c.getAttribute("aria-pressed") === "true");
+    chips().forEach((c) => c.setAttribute("aria-pressed", String(!all)));
+  });
+  const out = $("#mg-out");
+  const line = (a: string, ok: boolean, text: string) =>
+    `<div class="flex items-center gap-2 text-sm">${icon(ok ? "ok" : "error", `size-4 shrink-0 ${ok ? "text-good" : "text-bad"}`)}<span class="min-w-0 truncate"><b class="font-medium">${esc(a)}</b> · ${esc(text)}</span></div>`;
+  box.closest("section")!.addEventListener("click", async (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-act]");
+    if (!b) return;
+    const picked = chips()
+      .filter((c) => c.getAttribute("aria-pressed") === "true")
+      .map((c) => c.dataset.acc ?? "");
+    if (!picked.length) return toast("Choose one or more accounts first", "bad");
+    const act = b.dataset.act;
+    if (act === "remove" && !confirm(`Remove ${picked.join(", ")}?\n\nTheir photos stay in Google Photos.`))
+      return;
+    b.disabled = true;
+    const lines: string[] = [];
+    try {
+      if (act === "login") {
+        const r = await post<Record<string, string>>("health/check-login");
+        for (const a of picked)
+          lines.push(line(a, r[a] === "ok", r[a] === "ok" ? "Login works" : (r[a] ?? "Not checked")));
+      } else {
+        for (const a of picked) {
+          try {
+            if (act === "library") await post("storage/refresh", { account: a });
+            else if (act === "dates") await post("dates/refresh", { account: a });
+            else if (act === "retry") await post("dates/recheck", { account: a });
+            else if (act === "remove") await post("accounts/remove", { email: a });
+            const done: Record<string, string> = {
+              library: "Reading its Google library",
+              dates: "Checking dates with Google",
+              retry: "Waiting date fixes tried now",
+              remove: "Removed",
+            };
+            lines.push(line(a, true, done[act ?? ""] ?? "Done"));
+          } catch (err) {
+            lines.push(line(a, false, (err as Error).message));
+          }
+        }
+      }
+    } catch (err) {
+      lines.push(line(picked.join(", "), false, (err as Error).message));
+    } finally {
+      b.disabled = false;
+    }
+    if (act === "remove") {
+      await refresh();
+      renderSection();
+      toast(`Removed ${picked.length} account${picked.length > 1 ? "s" : ""}`, "good");
+      return;
+    }
+    out.innerHTML = lines.join("");
+  });
 }
 
 function wire(): void {
@@ -551,6 +859,8 @@ function wire(): void {
       renderSection();
     } else toast(d.error || "That doesn't look like a Google Photos login. Copy the whole line.", "bad");
   });
+  on("set-copy-prompt", "click", () => void copyText(AUTH_PROMPT));
+  wireManage();
   $$<HTMLButtonElement>("[data-remove]").forEach((b) =>
     b.addEventListener("click", async () => {
       if (!confirm(`Remove ${b.dataset.remove}? Files already in Google Photos stay there.`)) return;
@@ -563,7 +873,7 @@ function wire(): void {
   // folders
   // Folder account chips: tap to turn an account on or off for that folder.
   document
-    .querySelectorAll<HTMLButtonElement>(".chip[data-acc]")
+    .querySelectorAll<HTMLButtonElement>("[data-folder] .chip[data-acc]")
     .forEach((chip) =>
       chip.addEventListener("click", () =>
         chip.setAttribute("aria-pressed", String(chip.getAttribute("aria-pressed") !== "true")),
@@ -583,11 +893,39 @@ function wire(): void {
   on("set-save-albums", "click", () => {
     const albums =
       (document.querySelector('input[name="albums"]:checked') as HTMLInputElement | null)?.value ?? "off";
+    void save({ albums });
+  });
+  on("set-save-dups", "click", () => void save({ hash_existing: checked("set-hash") }));
+  on("set-save-dates", "click", async () => {
+    await saveSources({ estimate_dates: checked("set-estimate") }, "");
     void save({
-      albums,
-      hash_existing: checked("set-hash"),
       undated: { album: checked("set-undated"), name: val("set-undated-name").trim(), asked: true },
     });
+  });
+  on("set-save-sources", "click", () => {
+    const changes: Record<string, unknown> = { asked: true };
+    for (const [id] of APP_SOURCES) {
+      const row = document.querySelector<HTMLElement>(`[data-src="${id}"]`);
+      changes[id] = {
+        album: checked(`src-${id}-album`),
+        album_name: row?.querySelector<HTMLInputElement>('[data-set="album_name"]')?.value.trim() ?? "",
+        caption: checked(`src-${id}-caption`),
+        archive: checked(`src-${id}-archive`),
+      };
+    }
+    void saveSources(changes, "Sources saved. Google Photos is updated in the background.");
+  });
+  on("set-copy-run", "click", async () => {
+    const running = checked("set-copy-run");
+    try {
+      await post("copy/pause", { paused: !running });
+      if (cfg) cfg.copy_paused = !running;
+      const note = document.getElementById("set-copy-note");
+      if (note) note.textContent = running ? "Running." : "Paused: nothing is copied.";
+      toast(running ? "Copies running" : "Copies paused", "good");
+    } catch (e) {
+      toast((e as Error).message, "bad");
+    }
   });
 
   // alerts
@@ -625,7 +963,6 @@ function wire(): void {
 
   // app
   on("set-install", "click", () => void install());
-  wireGlassToggles();
   on("set-theme", "click", (e) => {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
     if (!b) return;
@@ -659,15 +996,15 @@ const settings: View = {
       if (section === "app" && cfg) renderSection();
     });
     el.innerHTML = `
-    <div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
-      <nav class="lg:col-span-4 xl:col-span-3" aria-label="Settings sections">
+    <div class="grid grid-cols-1 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
+      <nav aria-label="Settings sections">
         <div class="set-tabs scroll-thin lg:hidden">${SECTIONS.map(([k, l, ic, , c]) => `<a href="#/settings/${k}" data-sec="${k}" class="set-tab">${tileIcon(ic, c, "sm")}${l}</a>`).join("")}</div>
         <div class="set-nav hidden lg:flex">${SECTIONS.map(
-          ([k, l, ic, d, c]) =>
-            `<a href="#/settings/${k}" data-sec="${k}" class="set-item">${tileIcon(ic, c)}<span class="min-w-0 flex-1"><span class="block leading-snug">${l}</span><span class="block truncate text-xs font-normal text-ink-3">${d}</span></span>${icon("chevron", "set-chev")}</a>`,
+          ([k, l, ic, d, c, , g], i) =>
+            `${g !== SECTIONS[i - 1]?.[6] ? `<div class="set-group">${g}</div>` : ""}<a href="#/settings/${k}" data-sec="${k}" class="set-item">${tileIcon(ic, c)}<span class="min-w-0 flex-1"><span class="block leading-snug">${l}</span><span class="block truncate text-xs font-normal text-ink-3">${d}</span></span>${icon("chevron", "set-chev")}</a>`,
         ).join("")}</div>
       </nav>
-      <div class="min-w-0 lg:col-span-8 xl:col-span-9" id="set-body"><div class="card skeleton h-64"></div></div>
+      <div class="min-w-0" id="set-body"><div class="card skeleton h-64"></div></div>
     </div>`;
     void get<Settings>("settings").then((c) => {
       cfg = c;

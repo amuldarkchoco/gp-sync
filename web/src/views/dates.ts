@@ -9,6 +9,7 @@ import { $, animateChange, esc, html, toast } from "../lib/dom";
 import { ago, fileName, folderOf, num, pct } from "../lib/format";
 import { icon } from "../lib/icons";
 import { status } from "../lib/store";
+import { accountMenu, wireAccountMenu } from "../lib/account-menu";
 import { badge, openAttrs, thumb, type Tone } from "../lib/ui";
 import type { View } from "./view";
 
@@ -165,12 +166,14 @@ function row(i: DateItem, r: DatesReport): string {
 function render(): void {
   const r = report;
   const accs = status()?.accounts ?? [];
-  html(
-    $("#dt-acc"),
-    accs.length > 1
-      ? `<select class="input w-auto" id="dt-account">${accs.map((a) => `<option ${a === account ? "selected" : ""}>${esc(a)}</option>`).join("")}</select>`
-      : `<span class="text-sm text-ink-2">${esc(account || "No account")}</span>`,
-  );
+  // Redrawn only when it changes: a redraw would close the menu while it is open.
+  const accKey = [account, ...accs, ...(status()?.login_failed ?? [])].join("|");
+  const accBox = $("#dt-acc");
+  if (accBox.dataset.key !== accKey) {
+    accBox.dataset.key = accKey;
+    html(accBox, accountMenu("dt-account", account));
+    wireAccountMenu("dt-account", pickAccount);
+  }
   if (!r || !r.account) {
     html(
       $("#dt-body"),
@@ -213,7 +216,7 @@ function render(): void {
         <div class="flex flex-wrap items-center gap-3 border-b border-line p-4">
           <div class="min-w-0 flex-1 basis-64"><h2 class="font-semibold">Files without a date</h2>
             <p class="mt-1 text-xs text-ink-3">${num(r.undated)} files · ${num(r.wrong)} with different dates · ${num(r.waiting)} in progress</p></div>
-          <span class="text-xs text-ink-3">Album: ${r.album ? esc(r.album) : "Off"} · <a class="underline" href="#/settings/albums">Settings</a> · <a class="underline" href="#/sources">Sources</a></span>
+          <span class="text-xs text-ink-3">Album: ${r.album ? esc(r.album) : "Off"} · <a class="underline" href="#/settings/dates">Settings</a> · <a class="underline" href="#/sources">Sources</a></span>
         </div>
         ${r.error ? `<p class="border-b border-line px-4 py-3 text-sm text-bad" role="alert">${esc(r.error)}</p>` : ""}
         <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
@@ -349,17 +352,33 @@ function onClick(e: Event): void {
   }
 }
 
+/** Another account chosen in the menu, or opened from a link (#/dates/<account>). */
+function pickAccount(next: string): void {
+  account = next;
+  picked.clear();
+  report = null;
+  html($("#dt-body"), '<div class="card skeleton h-72"></div>');
+  void load();
+}
+
+/** The account named in the address, if it is connected. */
+function linkedAccount(args: string[] | undefined): string {
+  const want = decodeURIComponent(args?.[0] ?? "");
+  const accs = status()?.accounts ?? [];
+  return accs.includes(want) ? want : (accs[0] ?? "");
+}
+
 const dates: View = {
   subtitle: "Fix items Google dated wrong",
-  mount(el) {
-    account = status()?.accounts?.[0] ?? "";
+  mount(el, args) {
+    account = linkedAccount(args);
     picked.clear();
     show = "wrong";
     shown = 60;
     editing = "";
     el.innerHTML = `
     <section class="card mb-4 flex flex-wrap items-center gap-2 p-3">
-      <span class="flex items-center gap-2 px-1">${icon("users", "size-4 text-ink-3")}<span id="dt-acc"></span></span>
+      <span id="dt-acc" class="min-w-0"></span>
       <span class="text-xs text-ink-3 lg:ml-auto" id="dt-when"></span>
       <button class="btn" id="dt-refresh">${icon("refresh")}Check dates with Google</button>
     </section>
@@ -374,13 +393,7 @@ const dates: View = {
     el.addEventListener("click", onClick);
     el.addEventListener("change", (e) => {
       const t = e.target as HTMLInputElement;
-      if (t.id === "dt-account") {
-        account = t.value;
-        picked.clear();
-        report = null;
-        html($("#dt-body"), '<div class="card skeleton h-72"></div>');
-        void load();
-      } else if (t.dataset.pick) {
+      if (t.dataset.pick) {
         if (t.checked) picked.add(t.dataset.pick);
         else picked.delete(t.dataset.pick);
         const name = t.dataset.pick;
@@ -398,6 +411,10 @@ const dates: View = {
         r?.refreshing || r?.current || r?.items.some((i) => i.fix === "waiting" || i.fix === "in_google");
       if (active || ++ticks % 8 === 0) void load(); // busy: every 4 s, else every 30 s
     }, 4000);
+  },
+  route(args) {
+    const next = linkedAccount(args);
+    if (next && next !== account) pickAccount(next);
   },
   unmount() {
     clearInterval(timer);
