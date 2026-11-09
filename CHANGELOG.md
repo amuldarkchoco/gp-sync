@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.1
+
+- Fixed: Free storage over-counted what uses your Google storage. A photo that is also in albums is
+  stored once by Google but was listed once per album, so the total could read far higher than
+  Google's own (for example 131 GB instead of 70 GB). Each item is now counted once, and "Free all"
+  frees each one once.
+- The login-line prompt is reworded so AI assistants that refuse account-token steps understand it
+  is your own account on your own device, and docs/PROMPTS.md now has copy-paste commands to read
+  the line yourself without an assistant.
+
 ## 1.5.0
 
 - Fixed: the repeated "Could not update album … 404" error. One item missing from Google (deleted,

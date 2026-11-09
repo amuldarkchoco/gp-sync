@@ -2602,9 +2602,12 @@ def storage_report(account, limit=500):
     }
     rows = _library_rows(
         account,
+        # The same photo appears once as the library item and again for each album it is in, all
+        # with the same dedup_key and the same quota_charged_bytes. Google charges it once, so each
+        # item is counted once here too (the canonical copy, which has no album, comes first).
         """SELECT media_key, dedup_key, file_name, type, size_bytes, quota_charged_bytes, utc_timestamp
            FROM remote_media WHERE origin = 'self' AND COALESCE(trash_timestamp, 0) = 0
-           AND COALESCE(is_locked, 0) = 0""",
+           AND COALESCE(is_locked, 0) = 0 ORDER BY is_canonical DESC, content_version""",
     )
     jobs = {
         r[0]: r
@@ -2619,7 +2622,11 @@ def storage_report(account, limit=500):
     }
     items, counted, counted_bytes, total, ours_counted, ours_seen = [], 0, 0, 0, 0, 0
     kinds = {k: {"count": 0, "bytes": 0} for k in RECLAIM_TYPES}
+    seen = set()  # dedup_keys already counted: each photo once, not once per album
     for key, dedup, name, kind, size, quota, taken in rows or []:
+        if dedup in seen:
+            continue
+        seen.add(dedup)
         total += 1
         if dedup in ours:
             ours_seen += 1
@@ -2683,7 +2690,17 @@ def reclaim_queue_all(account, kind="all", keep=False):
     if kind != "all":
         where += " AND type = ?"
         args = (RECLAIM_TYPES[kind],)
-    keys = [k for (k,) in _library_rows(account, f"SELECT media_key FROM remote_media WHERE {where}", args) or []]
+    # One media_key per item (the canonical copy): albums repeat the same photo, and freeing works
+    # on the whole item anyway. SQLite returns the bare column from the row holding MAX(is_canonical).
+    keys = [
+        r[0]
+        for r in _library_rows(
+            account,
+            f"SELECT media_key, MAX(is_canonical) FROM remote_media WHERE {where} GROUP BY dedup_key",
+            args,
+        )
+        or []
+    ]
     busy = {k for (k,) in q("SELECT media_key FROM reclaim WHERE account=? AND state NOT IN ('failed', 'cancelled')",
                             (account,))}  # fmt: skip
     return reclaim_queue(account, [k for k in keys if k not in busy], keep)

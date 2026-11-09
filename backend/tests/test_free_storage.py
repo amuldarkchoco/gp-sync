@@ -377,3 +377,31 @@ def test_keep_the_downloaded_copy(library, tmp_path, monkeypatch):
     assert not (sync.RECLAIM_DIR / ACC / "BIG").exists()  # the working copy is gone
     assert sync.downloads_delete(account=ACC) == {"deleted": 1}
     assert not kept.exists() and sync.downloads_report()["items"] == []
+
+
+def test_an_item_in_albums_is_counted_once(library):
+    # The same photo appears as the library copy and again in two albums: same dedup, same quota.
+    same = b"album photo bytes" * 100
+    dedup = b64(same)
+
+    def copy(key, canonical, album):
+        return MediaItem(
+            media_key=key, file_name="LIB.jpg", dedup_key=dedup, is_canonical=canonical, type=1, caption=None,
+            collection_id=album, size_bytes=len(same), quota_charged_bytes=len(same), origin="self",
+            content_version=1, utc_timestamp=1_700_000_000_000, server_creation_timestamp=0,
+        )  # fmt: skip
+
+    with Storage(library) as st:
+        st.update([copy("LIB", True, ""), copy("ALB1", False, "A1"), copy("ALB2", False, "A2")])
+    r = sync.storage_report(ACC)
+    # BIG + SMALL (from the fixture) + the one album photo, counted once at its real size.
+    assert r["counted"] == 3
+    assert r["counted_bytes"] == len(DATA) + 5 + len(same)
+    keys = [i["key"] for i in r["items"] if i["name"] == "LIB.jpg"]
+    assert keys == ["LIB"]  # the canonical copy, not an album copy
+    assert "ALB1" not in [i["key"] for i in r["items"]]
+    # Free all queues the photo once, by its canonical key.
+    sync.q("DELETE FROM reclaim")
+    assert sync.reclaim_queue_all(ACC, "all")["queued"] == 3
+    queued = {k for (k,) in sync.q("SELECT media_key FROM reclaim")}
+    assert "LIB" in queued and "ALB1" not in queued and "ALB2" not in queued

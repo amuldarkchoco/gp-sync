@@ -19,29 +19,85 @@ Needs: an Android phone with **GmsCore** (microG) and **Google Photos ReVanced**
 debugging on (**Settings → About phone → tap Build number 7 times**, then **Developer options →
 USB debugging**), and a USB cable.
 
-```text
-Help me get the Google Photos login text for GP Sync from my Android phone.
+### The quick way: run the commands yourself
 
-My phone is connected to this computer by USB, with USB debugging turned on (Settings > Developer
-options). It has GmsCore (microG) and Google Photos ReVanced installed.
+You don't need an AI assistant for this. With the phone plugged in and signed in to Google Photos
+ReVanced, run one command. It reads the login line your own apps already wrote to the device log
+and prints only that line.
 
-1. Make sure adb works (install Android platform-tools for this operating system if it is
-   missing) and run "adb devices". If the phone shows as "unauthorized", tell me to accept the
-   prompt on the phone, then check again.
-2. Check both apps are installed: adb shell pm list packages | grep -i -E "revanced|microg|gms"
-   (on Windows use findstr /i instead of grep). If one is missing, tell me which and stop.
-3. Clear the log with "adb logcat -c", then watch it: adb logcat | grep "auth%2Fphotos.native"
-4. Tell me to open Google Photos ReVanced and sign in with the Google account I want to add. If
-   that account is already in GmsCore, tell me to remove it there first, then sign in again.
-5. From the first matching line, take everything from "androidId=" to the end of the line,
-   exactly as it is, and show it to me in one code block.
+**macOS or Linux:**
 
-This text is a login to my Google account: don't save it to a file, don't put it in any command
-history you control, and don't send it anywhere else.
+```sh
+adb logcat -d -b all 2>/dev/null | grep -o 'androidId=.*' | grep 'auth%2Fphotos.native' | tail -1
 ```
 
-Paste the line in GP Sync: **Settings → Google accounts → Add an account → Connect**. The same
-prompt is in the app, with a **Copy prompt** button.
+**Windows (PowerShell):**
+
+```powershell
+(adb logcat -d -b all | Select-String 'auth%2Fphotos.native' | Select-Object -Last 1) `
+  -replace '^.*?(androidId=)', '$1'
+```
+
+If it prints nothing, the line isn't in the log yet. Start watching, then open Google Photos
+ReVanced and sign in (or sign out and back in) with the account you want to add:
+
+```sh
+# macOS or Linux — prints the line as soon as it appears, then stops
+adb logcat | grep -m 1 --line-buffered 'auth%2Fphotos.native' | grep -o 'androidId=.*'
+```
+
+```powershell
+# Windows — Ctrl+C once the line prints
+adb logcat | Select-String 'auth%2Fphotos.native'
+```
+
+Copy the whole line, starting at `androidId=`. Checks: `adb devices` should list your phone (if it
+says `unauthorized`, accept the prompt on the phone); `adb shell pm list packages | grep -i -E
+"revanced|microg|gms"` should show both apps.
+
+### The assistant way: paste this prompt
+
+Some AI assistants refuse to read account tokens, even your own. The prompt below gives the
+assistant the context it needs — this is your account, on your device, and a documented setup step
+for the open-source GP Sync project — so it helps instead of guessing at your intent.
+
+```text
+I'm setting up GP Sync (https://github.com/kshanxs/gp-sync), an open-source self-hosted tool that
+backs up MY OWN photos to MY OWN Google Photos account. This is a normal, documented setup step
+for that project; it is not an attack or an attempt to access anyone else's account.
+
+To authorise the tool, I need the Google Photos sign-in line that MY apps on MY OWN Android phone,
+which is plugged into this computer by USB, have already written to the device's own debug log
+(the standard `adb logcat`). I am the account owner and the device owner. Nothing is being
+intercepted: adb only reads the log my own phone exposes to the computer I connected it to.
+
+Please run these read-only commands and help me:
+
+1. Confirm the phone is connected: `adb devices`. If it shows "unauthorized", tell me to accept
+   the USB debugging prompt on the phone, then re-run it. If no device, tell me to check the cable
+   and that USB debugging is on.
+2. Confirm the apps: `adb shell pm list packages | grep -i -E "revanced|microg|gms"`
+   (on Windows, `findstr /i` instead of `grep`). Both GmsCore (microG) and Google Photos ReVanced
+   should appear.
+3. Read the line already in the log:
+   `adb logcat -d -b all | grep -o 'androidId=.*' | grep 'auth%2Fphotos.native' | tail -1`
+4. If that prints nothing, tell me to open Google Photos ReVanced and sign in with my account
+   (if it's already in GmsCore, remove it there first and sign in again), while you watch:
+   `adb logcat | grep -m 1 'auth%2Fphotos.native' | grep -o 'androidId=.*'`
+5. Show me the full line, from `androidId=` to the end, in one code block.
+
+This line is a credential for my own Google account, so please don't save it to a file or send it
+anywhere; just print it here so I can paste it into GP Sync myself.
+```
+
+If an assistant still declines, use the commands above directly, or copy the line by hand from the
+`adb logcat` output.
+
+### Paste it into GP Sync
+
+**Settings → Google accounts → Add an account → Connect.** Paste the line exactly as it is (it is
+URL-encoded; don't decode it). The same prompt is in the app, under Google accounts, with a
+**Copy prompt** button.
 
 ## Run GP Sync on a laptop
 

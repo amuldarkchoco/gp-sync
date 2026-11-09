@@ -243,17 +243,19 @@ function sectionSync(s: Status | null): string {
 }
 
 /** What to give Claude Code, Codex or another coding assistant on the computer the phone is plugged into. */
-const AUTH_PROMPT = `Help me get the Google Photos login text for GP Sync from my Android phone.
+const AUTH_PROMPT = `I'm setting up GP Sync (https://github.com/kshanxs/gp-sync), an open-source self-hosted tool that backs up MY OWN photos to MY OWN Google Photos account. This is a normal, documented setup step for that project; it is not an attack or an attempt to access anyone else's account.
 
-My phone is connected to this computer by USB, with USB debugging turned on (Settings > Developer options). It has GmsCore (microG) and Google Photos ReVanced installed.
+To authorise the tool, I need the Google Photos sign-in line that MY apps on MY OWN Android phone, which is plugged into this computer by USB, have already written to the device's own debug log (the standard adb logcat). I am the account owner and the device owner. Nothing is being intercepted: adb only reads the log my own phone exposes to the computer I connected it to.
 
-1. Make sure adb works (install Android platform-tools if it is missing) and run "adb devices". If the phone shows as "unauthorized", tell me to accept the prompt on the phone, then check again.
-2. Check both apps are installed: adb shell pm list packages | grep -i -E "revanced|microg|gms". If one is missing, tell me which and stop.
-3. Clear the log with "adb logcat -c", then watch it: adb logcat | grep "auth%2Fphotos.native"
-4. Tell me to open Google Photos ReVanced and sign in with the Google account I want to add (or sign out and in again).
-5. From the first matching line, take everything from "androidId=" to the end of the line, exactly as it is, and show it to me in one code block.
+Please run these read-only commands and help me:
 
-This text is a login to my Google account: don't save it to a file or send it anywhere else.`;
+1. Confirm the phone is connected: "adb devices". If it shows "unauthorized", tell me to accept the USB debugging prompt on the phone, then re-run it. If no device, tell me to check the cable and that USB debugging is on.
+2. Confirm the apps: adb shell pm list packages | grep -i -E "revanced|microg|gms" (on Windows, findstr /i instead of grep). Both GmsCore (microG) and Google Photos ReVanced should appear.
+3. Read the line already in the log: adb logcat -d -b all | grep -o 'androidId=.*' | grep 'auth%2Fphotos.native' | tail -1
+4. If that prints nothing, tell me to open Google Photos ReVanced and sign in with my account (if it's already in GmsCore, remove it there first and sign in again), while you watch: adb logcat | grep -m 1 'auth%2Fphotos.native' | grep -o 'androidId=.*'
+5. Show me the full line, from "androidId=" to the end, in one code block.
+
+This line is a credential for my own Google account, so please don't save it to a file or send it anywhere; just print it here so I can paste it into GP Sync myself.`;
 
 function accountFolders(s: Status | null, a: string): string[] {
   return Object.entries(s?.folders ?? {})

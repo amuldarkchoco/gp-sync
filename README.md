@@ -211,18 +211,25 @@ Each day has `photos`, `videos`, `photo_bytes`, `video_bytes`, `existing`, `fail
 
 ## Connect your Google account (once)
 
-**Easiest:** copy the [login-line prompt](docs/PROMPTS.md#get-the-google-login-line) (also in the app,
-under **Settings → Google accounts**) into Claude Code or Codex on the computer your phone is plugged
-into. It checks adb and the apps, watches the log while you sign in, and hands you the line.
-
-By hand:
-
 1. On an Android phone, install [GmsCore](https://github.com/ReVanced/GmsCore/releases) and [Google Photos ReVanced](https://github.com/j-hc/revanced-magisk-module/releases).
-2. Turn on USB debugging and connect the phone to a computer with `adb`.
-3. Run `adb logcat | grep "auth%2Fphotos.native"` (Windows: `adb logcat | FINDSTR "auth%2Fphotos.native"`).
-4. Open Google Photos ReVanced and sign in. If the account is already in GmsCore, remove it there first.
-5. Copy the text from `androidId=` to the end of the line, paste it in **Settings → Google accounts**
+2. Turn on USB debugging and connect the phone to a computer with `adb`. Open Google Photos
+   ReVanced and sign in. If the account is already in GmsCore, remove it there first.
+3. Read the sign-in line your phone already wrote to its log, and print only that line:
+
+   ```sh
+   # macOS or Linux
+   adb logcat -d -b all | grep -o 'androidId=.*' | grep 'auth%2Fphotos.native' | tail -1
+   ```
+
+   If it prints nothing, run `adb logcat | grep -m 1 'auth%2Fphotos.native'` and sign in again.
+   See [docs/PROMPTS.md](docs/PROMPTS.md#get-the-google-login-line) for the Windows command.
+4. Copy the text from `androidId=` to the end of the line, paste it in **Settings → Google accounts**
    and press **Connect**.
+
+Prefer an assistant to run it? Copy the [login-line prompt](docs/PROMPTS.md#get-the-google-login-line)
+(also in the app, under **Settings → Google accounts**, with a **Copy prompt** button) into Claude
+Code or Codex. It is worded so assistants understand it is your own account on your own device, since
+some refuse account-token steps otherwise.
 
 Treat that line like a password: it gives full access to the Google Photos library.
 
