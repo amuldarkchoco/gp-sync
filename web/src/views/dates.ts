@@ -78,12 +78,15 @@ const SOURCE: Record<DateItem["source"], string> = {
 };
 
 function stateOf(i: DateItem, r: DatesReport): { label: string; tone: Tone; ic: Parameters<typeof icon>[0] } {
-  if (r.current?.key === i.name) return { label: "Uploading", tone: "info", ic: "upload" };
+  if (r.current?.key === i.name)
+    return r.current.step === "deleting"
+      ? { label: "Replacing in Google", tone: "info", ic: "loader" }
+      : { label: "Uploading", tone: "info", ic: "upload" };
   switch (i.fix) {
     case "waiting":
-      return { label: "Delete it in Google Photos", tone: "warn", ic: "external" };
+      return { label: "Queued", tone: "info", ic: "hourglass" };
     case "in_google":
-      return { label: "Still in Google's Trash", tone: "warn", ic: "trash" };
+      return { label: "Retrying", tone: "warn", ic: "refresh" };
     case "done":
       return i.wrong
         ? { label: "Date wrong again", tone: "bad", ic: "warn" }
@@ -105,13 +108,13 @@ function actions(i: DateItem, r: DatesReport): string {
   const open = i.google_url
     ? `<a class="link-btn sm" href="${esc(i.google_url)}" target="_blank" rel="noopener noreferrer">${icon("external")}Open in Google Photos</a>`
     : "";
-  const cancel = `<button class="btn icon sm" data-cancel="${esc(i.name)}" title="Stop waiting (nothing changes in Google)" aria-label="Cancel">${icon("x")}</button>`;
+  const cancel = `<button class="btn icon sm" data-cancel="${esc(i.name)}" title="Stop (nothing more changes in Google)" aria-label="Cancel">${icon("x")}</button>`;
   const edit = `<button class="btn sm" data-edit="${esc(i.name)}">${icon("calendar")}Set date</button>`;
   if (r.current?.key === i.name) return open;
   switch (i.fix) {
     case "waiting":
     case "in_google":
-      return `${open}<button class="btn sm" data-recheck="${esc(i.name)}">${icon("refresh")}Recheck now</button>${cancel}`;
+      return `${open}<button class="btn sm" data-recheck="${esc(i.name)}">${icon("refresh")}Try now</button>${cancel}`;
     case "failed":
       return `${open}${edit}<button class="btn sm" data-fix="${esc(i.name)}">${icon("retry")}Try again</button>${cancel}`;
     default:
@@ -139,12 +142,7 @@ function row(i: DateItem, r: DatesReport): string {
         ? "Sent (unconfirmed)"
         : "In Google (unchecked)";
   const previousLabel = i.previous_google_source === "sent" ? "Before fix · last sent" : "Before fix";
-  const hint =
-    i.fix === "waiting"
-      ? "Delete it in Google Photos and its Trash. GP Sync re-uploads it within 2 minutes."
-      : i.fix === "in_google"
-        ? "Google still has it. Open Google Photos › Library › Trash and delete it there too."
-        : i.error;
+  const hint = i.fix === "waiting" ? "" : i.error;
   return `<div class="row flex-wrap items-start px-4 py-3 sm:flex-nowrap">
     ${canPick ? `<input type="checkbox" class="mt-3 size-4 accent-[var(--accent)]" data-pick="${esc(i.name)}" ${picked.has(i.name) ? "checked" : ""} aria-label="Pick ${esc(fileName(i.name))}">` : '<span class="w-4 shrink-0"></span>'}
     <span class="clickable" ${openAttrs(i.name)}>${thumb(i.name)}</span>
@@ -158,7 +156,6 @@ function row(i: DateItem, r: DatesReport): string {
       </div>
       ${cur ? `<div class="bar mt-2"><i style="width:${pct(cur.done, cur.total)}%"></i></div>` : ""}
       ${hint ? `<div class="mt-1 text-xs ${i.fix === "failed" ? "text-bad" : "text-ink-3"}">${esc(hint)}</div>` : ""}
-      
       ${editing === i.name ? editor(i) : ""}
     </div>
     <div class="row-actions flex w-full shrink-0 flex-wrap items-center justify-end gap-1.5 empty:hidden sm:w-auto">${actions(i, r)}</div>
@@ -200,13 +197,13 @@ function render(): void {
   const pickedWaiting = selectedItems().filter(waiting).length;
   const tabs: [DateFilter, string, number][] = [
     ["wrong", "Needs review", filterDates(r.items, "wrong").length],
-    ["waiting", "Waiting", r.waiting],
+    ["waiting", "In progress", r.waiting],
     ["fixed", "Fixed", filterDates(r.items, "fixed").length],
     ["all", "All", r.items.length],
   ];
   const empty: Record<DateFilter, string> = {
     wrong: "No dates need review",
-    waiting: "No items waiting for deletion",
+    waiting: "Nothing in progress",
     fixed: "No fixed dates yet",
     all: "No uploaded files without a date",
   };
@@ -215,7 +212,7 @@ function render(): void {
     `<section class="card min-w-0 overflow-hidden">
         <div class="flex flex-wrap items-center gap-3 border-b border-line p-4">
           <div class="min-w-0 flex-1 basis-64"><h2 class="font-semibold">Files without a date</h2>
-            <p class="mt-1 text-xs text-ink-3">${num(r.undated)} files · ${num(r.wrong)} with different dates · ${num(r.waiting)} waiting</p></div>
+            <p class="mt-1 text-xs text-ink-3">${num(r.undated)} files · ${num(r.wrong)} with different dates · ${num(r.waiting)} in progress</p></div>
           <span class="text-xs text-ink-3">Album: ${r.album ? esc(r.album) : "Off"} · <a class="underline" href="#/settings/albums">Settings</a> · <a class="underline" href="#/sources">Sources</a></span>
         </div>
         ${r.error ? `<p class="border-b border-line px-4 py-3 text-sm text-bad" role="alert">${esc(r.error)}</p>` : ""}
@@ -225,9 +222,9 @@ function render(): void {
           </div>
           <div class="flex flex-wrap items-center gap-2 sm:ml-auto" id="dt-actions">
             ${pickedFixable ? `<button class="btn sm primary" id="dt-picked">${icon("retry")}Fix picked (${num(pickedFixable)})</button>` : ""}
-            ${pickedWaiting ? `<button class="btn sm" id="dt-recheck-picked">${icon("refresh")}Recheck picked (${num(pickedWaiting)})</button>` : ""}
+            ${pickedWaiting ? `<button class="btn sm" id="dt-recheck-picked">${icon("refresh")}Try picked now (${num(pickedWaiting)})</button>` : ""}
             ${(show === "wrong" || show === "all") && fixableItems.length ? `<button class="btn sm" id="dt-all">${icon("retry")}Fix all wrong (${num(fixableItems.length)})</button>` : ""}
-            ${(show === "waiting" || show === "all") && r.waiting ? `<button class="btn sm" id="dt-recheck-all">${icon("refresh")}Recheck all waiting (${num(r.waiting)})</button>` : ""}
+            ${(show === "waiting" || show === "all") && r.waiting ? `<button class="btn sm" id="dt-recheck-all">${icon("refresh")}Try all now (${num(r.waiting)})</button>` : ""}
           </div>
         </div>
         ${
@@ -252,6 +249,13 @@ function render(): void {
 async function fixList(names: string[]): Promise<void> {
   if (!names.length) return;
   const selectedAccount = account;
+  const what = names.length === 1 ? "this item" : `${num(names.length)} items`;
+  if (
+    !confirm(
+      `Fix ${what} in ${selectedAccount}?\n\nEach is deleted in Google Photos and uploaded again with the right date. Favourite, archive, caption and GP Sync albums come back; shared links and comments don't.`,
+    )
+  )
+    return;
   let queued = 0;
   try {
     for (let i = 0; i < names.length; i += 1000) {
@@ -262,7 +266,7 @@ async function fixList(names: string[]): Promise<void> {
       queued += result.queued;
     }
     toast(
-      queued ? `${num(queued)} waiting: delete them in Google Photos` : "No items were queued",
+      queued ? `Fixing ${num(queued)} item(s) in Google Photos` : "Nothing to fix",
       queued ? "good" : "info",
     );
   } catch (e) {
@@ -278,9 +282,7 @@ async function recheck(names: string[] | null): Promise<void> {
       ...(names === null ? { all: true } : { paths: names }),
     });
     toast(
-      result.queued
-        ? `Queued ${num(result.queued)} waiting item(s) for recheck`
-        : "No waiting items to recheck",
+      result.queued ? `Trying ${num(result.queued)} item(s) now` : "Nothing to try",
       result.queued ? "good" : "info",
     );
   } catch (e) {
@@ -332,9 +334,7 @@ function onClick(e: Event): void {
     void fixList(names);
     for (const name of names) picked.delete(name);
   } else if (b.id === "dt-all") {
-    const names = (report?.items ?? []).filter(fixable);
-    if (confirm(`Fix ${names.length} item(s)? You then delete each one in Google Photos.`))
-      void fixList(names.map((i) => i.name));
+    void fixList((report?.items ?? []).filter(fixable).map((i) => i.name));
   } else if (b.id === "dt-recheck-picked") {
     void recheck(
       selectedItems()
@@ -366,8 +366,7 @@ const dates: View = {
     <details class="mb-4 px-1 text-sm text-ink-3">
       <summary class="cursor-pointer font-medium text-ink-2">How it works</summary>
       <div class="mt-2 space-y-2 leading-relaxed">
-        <p>Pick a date, press Fix, then delete the item in Google Photos and its Trash.</p>
-        <p>GP Sync then uploads it again with the right date (checks every 2 minutes).</p>
+        <p>Press Fix: GP Sync deletes the item in Google Photos (and its Trash) and uploads it again with the right date. Only if the file here is exactly what was uploaded.</p>
         <p>Quality, favourite, archive, caption and GP Sync albums come back. Shared links and comments don't.</p>
       </div>
     </details>

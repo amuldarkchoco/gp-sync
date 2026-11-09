@@ -282,9 +282,10 @@ def ntfy_server():
             self.end_headers()
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
     yield f"http://127.0.0.1:{srv.server_address[1]}/backups", got
     srv.shutdown()
+    srv.server_close()
 
 
 def test_ntfy_alert(ntfy_server):

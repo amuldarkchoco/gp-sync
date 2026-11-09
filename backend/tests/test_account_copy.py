@@ -28,8 +28,7 @@ def libs(tmp_path, monkeypatch, media):
     sync.save_account(SECOND_AUTH)
     monkeypatch.setattr(sync, "GPMC_HOME", tmp_path / "gpmc")
     monkeypatch.setattr(sync, "COPY_DIR", tmp_path / "copy")
-    monkeypatch.setitem(sync.copy_state, "current", None)
-    monkeypatch.setitem(sync.copy_state, "error", "")
+    sync.copy_state.clear()
     sync.q("DELETE FROM copyjobs")
     sync.meta_set("copy_paused", "0")
     dbs = {}
@@ -152,7 +151,7 @@ def test_removed_account_pauses_instead_of_failing(libs):
     assert not sync.copy_step(get)
     r = sync.q("SELECT state FROM copyjobs WHERE src=?", (SRC,))
     assert {s for (s,) in r} == {"queued"}
-    assert sync.meta_get("copy_paused") == "1" and "no longer connected" in sync.copy_state["error"]
+    assert sync.meta_get("copy_paused") == "1" and "no longer connected" in sync.copy_state[(SRC, DST)]["error"]
 
 
 def test_failed_check_does_not_fail_the_copy(libs, monkeypatch):
@@ -207,3 +206,10 @@ def test_copy_candidates_api(libs, server):
     body = json.dumps({"src": SRC, "dst": DST, "keys": [], "kinds": ["photo", "video"]}).encode()
     with urllib.request.urlopen(urllib.request.Request(f"{server}/api/copy/start", body)) as r:
         assert json.load(r)["queued"] == 0
+
+
+def test_copy_keeps_googles_date(libs):
+    sync.copy_start(SRC, DST, ["photo"], 2020, None)
+    made, get = clients(libs)
+    sync.copy_step(get)
+    assert made[DST].uploads[0][3] == 1_700_000_000  # the date Google showed in the source account

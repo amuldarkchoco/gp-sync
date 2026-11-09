@@ -1,6 +1,7 @@
 """Dates: files without their own capture date get the right one in Google Photos, go into an album
 of their own, and ones uploaded with a wrong date can be uploaded again with the right one."""
 
+import base64
 import hashlib
 import inspect
 import io
@@ -99,6 +100,14 @@ class FakeApi:
     def add_media_to_album(self, album_media_key, media_keys):
         self.albums[album_media_key][1].extend(media_keys)
 
+    def move_remote_media_to_trash(self, dedups):
+        self.calls.append(("trash", list(dedups)))
+
+    def delete_remote_media_permanently(self, dedups):
+        self.calls.append(("delete", list(dedups)))
+        for d in dedups:
+            self.google.discard(base64.urlsafe_b64decode(d + "=" * (-len(d) % 4)))
+
     def set_favorite(self, dedup, on):
         self.calls.append(("favorite", dedup, on))
 
@@ -135,7 +144,7 @@ def dates(media, tmp_path, monkeypatch):
     sync.q("DELETE FROM copies")
     sync._dates_checked.clear()
     monkeypatch.setattr(sync, "GPMC_HOME", tmp_path / "gpmc")
-    monkeypatch.setitem(sync.dates_state, "current", None)
+    sync.dates_state.clear()
     monkeypatch.setitem(sync.state, "phase", "idle")  # date checks only run while idle
     for p in list(sync.MEDIA.rglob("*")):
         if p.is_file():
@@ -166,7 +175,32 @@ def test_dated_photo_keeps_gpmc_behaviour(dates):
     upload(client, p)
     assert client.api.sent == [1_700_000_000]  # file time; Google uses the date inside anyway
     assert sync.sq("SELECT inside, sent FROM media_dates WHERE path=?", (str(p),)) == [(1, None)]
-    assert "commit_upload" not in vars(client.api)  # gpmc's own method is back
+
+
+def test_upload_dates_stay_in_their_own_thread(dates):
+    """One login is shared by an account's workers: a date set for one upload never reaches another
+    worker's upload running at the same time."""
+    import threading
+
+    client = GpmcLike()
+    inside, other = threading.Event(), threading.Event()
+    sent = {}
+
+    def dated():
+        with sync.upload_date(client, 1_600_000_000):
+            inside.set()
+            other.wait(2)
+            sent["dated"] = client.api.commit_upload(upload_response_decoded={}, file_name="a", sha1_hash=b"a",
+                                                     upload_timestamp=1_700_000_000)  # fmt: skip
+
+    t = threading.Thread(target=dated)
+    t.start()
+    inside.wait(2)
+    sent["plain"] = client.api.commit_upload(upload_response_decoded={}, file_name="b", sha1_hash=b"b",
+                                             upload_timestamp=1_700_000_000)  # fmt: skip
+    other.set()
+    t.join()
+    assert client.api.sent == [1_700_000_000, 1_600_000_000]  # the plain upload kept its own date
 
 
 def test_picked_date_wins(dates):
@@ -260,12 +294,10 @@ def test_fix_round_trip(dates):
     waiting = next(i for i in sync.dates_report(ACC)["items"] if i["name"] == "Photos/b/late.jpg")
     assert waiting["previous_google"] == 1_700_000_000 + 3 * DAY
     assert waiting["previous_google_source"] == "google"
-    assert not sync.datefix_step(lambda a: client)  # still in Google
-    assert client.api.sent == []
-
-    client.api.google.clear()  # the user deleted it in Google Photos
-    sync._dates_checked.clear()
+    # One step: Google's copy goes (Trash, then out of it) and the file is uploaded with the right date.
     assert sync.datefix_step(lambda a: client)
+    dedup = sync._b64_hash(bytes.fromhex(sha1hex))
+    assert client.api.calls[:2] == [("trash", [dedup]), ("delete", [dedup])]
     assert client.api.sent == [1_700_000_000]
     assert ("favorite", sync._b64_hash(bytes.fromhex(sha1hex)), True) in client.api.calls
     assert ("caption", sync._b64_hash(bytes.fromhex(sha1hex)), "Shimla") in client.api.calls
@@ -361,7 +393,15 @@ def test_fix_waits_while_google_still_has_it_in_trash(dates):
     assert sync.dates_cancel(["Photos/t.jpg"]) == {"cancelled": 1}
 
 
-def test_recheck_selected_and_all(dates, server, monkeypatch):
+class KeepingApi(FakeApi):
+    """Google that says yes to deleting but keeps the item."""
+
+    def delete_remote_media_permanently(self, dedups):
+        self.calls.append(("delete", list(dedups)))
+
+
+def test_fix_retries_when_google_keeps_it_and_recheck_retries_now(dates, server, monkeypatch):
+    monkeypatch.setattr(sync.time, "sleep", lambda s: None)
     other = "other@example.com"
     monkeypatch.setattr(sync, "accounts", lambda: [(ACC, "auth"), (other, "auth")])
     paths = [
@@ -379,11 +419,13 @@ def test_recheck_selected_and_all(dates, server, monkeypatch):
         sync.date_facts(str(p), p.stat().st_size, p.stat().st_mtime)
     sync.dates_fix([f"Photos/{p.name}" for p in paths])
     client = GpmcLike(google={hashlib.sha1(p.read_bytes()).digest() for p in paths})
+    client.api.__class__ = KeepingApi
     assert not sync.datefix_step(lambda _account: client)
-    assert all(str(p) in sync._dates_checked for p in paths)
+    assert client.api.sent == []  # nothing uploaded while Google still has them
+    assert all(sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(p),)) == [("in_google",)] for p in paths)
     sync.reclaim_wake.clear()
 
-    # The selected file is checked again immediately; another account and invalid paths are ignored.
+    # Retry now: only the selected file of this account; another account and invalid paths are ignored.
     client.api.google.remove(hashlib.sha1(paths[0].read_bytes()).digest())
     code, body = post(
         f"{server}/api/dates/recheck",
@@ -391,21 +433,32 @@ def test_recheck_selected_and_all(dates, server, monkeypatch):
     )
     assert code == 200 and json.loads(body) == {"queued": 1}
     assert sync.reclaim_wake.is_set()
-    assert str(paths[0]) not in sync._dates_checked
-    assert all(str(p) in sync._dates_checked for p in paths[1:])
     assert sync.datefix_step(lambda _account: client)
     assert len(client.api.sent) == 1
     assert sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(paths[0]),)) == [("done",)]
-    assert sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(paths[1]),)) == [("waiting",)]
+    assert sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(paths[1]),)) == [("in_google",)]
 
-    # Rechecking all only affects waiting files owned by this account, and won't upload one Google still has.
     code, body = post(f"{server}/api/dates/recheck", json.dumps({"account": ACC, "all": True}).encode())
     assert code == 200 and json.loads(body) == {"queued": 1}
-    assert str(paths[1]) not in sync._dates_checked and str(paths[2]) in sync._dates_checked
-    assert not sync.datefix_step(lambda _account: client)
-    assert len(client.api.sent) == 1
     code, _ = post(f"{server}/api/dates/recheck", json.dumps({"account": "unknown", "all": True}).encode())
     assert code == 400
+
+
+def test_changed_file_is_never_replaced(dates):
+    p = put("Photos/c.jpg", jpeg(), 1_700_000_000)
+    digest = hashlib.sha1(p.read_bytes()).digest()
+    sync.q(
+        "INSERT INTO files (path, size, mtime, status, media_key, account, sha1, updated) "
+        "VALUES (?,?,?,'uploaded','OLD',?,?,1)",
+        (str(p), p.stat().st_size, p.stat().st_mtime, ACC, digest.hex()),
+    )
+    sync.date_facts(str(p), p.stat().st_size, p.stat().st_mtime)
+    sync.dates_fix(["Photos/c.jpg"])
+    p.write_bytes(jpeg(color=(1, 2, 3)))  # edited here after it was uploaded
+    client = GpmcLike(google={digest})
+    sync.datefix_step(lambda _account: client)
+    assert client.api.calls == [] and client.api.sent == []
+    assert sync.sq("SELECT fix FROM media_dates WHERE path=?", (str(p),)) == [("failed",)]
 
 
 def test_recheck_still_respects_google_trash(dates):

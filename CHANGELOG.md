@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.0
+
+- Fix dates is automatic: GP Sync checks the file is unchanged, deletes Google's copy (Trash, then
+  permanently) and uploads it again with the right date. No albums or manual steps.
+- Free storage is automatic: items that count against your storage are downloaded, deleted in Google
+  and uploaded again free, keeping the date Google showed (Snapchat saves included).
+- Accounts work at the same time: Free storage, Fix dates and copies run in parallel per account and
+  per copy pair. Overview lists everything running under "Also running".
+- Every re-upload sends its original date to Google, and each job keeps its own date when several
+  run at once.
+- Backups reuse each account's Google login instead of signing in every round; parallel downloads
+  reserve disk space; library reads are one at a time per account.
+- Faster tests (32 s to 3 s) and Docker builds; releases can update the Umbrel store right away.
+
 ## 1.3.0
 
 - New look: warm paper and amber by day, ink-black and indigo by night, with clean solid cards in

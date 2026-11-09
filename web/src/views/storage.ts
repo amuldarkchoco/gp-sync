@@ -7,7 +7,7 @@ import { badge, cardHead, tile, type Tone } from "../lib/ui";
 import type { View } from "./view";
 
 // Free up Google storage: items that count against it are downloaded (and proven to be Google's
-// original), the user deletes them in Google Photos, and GP Sync uploads them again for free.
+// original), deleted in Google Photos (and its Trash), and uploaded again for free. All automatic.
 
 let account = "";
 let report: StorageReport | null = null;
@@ -46,14 +46,16 @@ function stateOf(
   if (r.current?.key === i.key)
     return r.current.step === "downloading"
       ? { label: "Downloading", tone: "info", ic: "download" }
-      : { label: "Uploading", tone: "info", ic: "upload" };
+      : r.current.step === "deleting"
+        ? { label: "Replacing in Google", tone: "info", ic: "loader" }
+        : { label: "Uploading", tone: "info", ic: "upload" };
   switch (i.state) {
     case "queued":
-      return { label: "Waiting to download", tone: "", ic: "hourglass" };
+      return { label: "Queued", tone: "", ic: "hourglass" };
     case "downloaded":
-      return { label: "Delete it in Google Photos", tone: "warn", ic: "external" };
+      return { label: "Downloaded", tone: "info", ic: "hourglass" };
     case "in_google":
-      return { label: "Still in Google's Trash", tone: "warn", ic: "trash" };
+      return { label: "Retrying", tone: "warn", ic: "refresh" };
     case "checking":
       return { label: "Checking with Google", tone: "info", ic: "loader" };
     case "done":
@@ -69,19 +71,18 @@ function stateOf(
 }
 
 function actions(i: StorageItem, r: StorageReport): string {
-  const open = `<a class="btn sm primary" href="${esc(i.google_url)}" target="_blank" rel="noopener">${icon("external")}Open in Google Photos</a>`;
   const cancel = `<button class="btn icon sm" data-cancel="${esc(i.key)}" title="Forget it (the downloaded copy is removed)" aria-label="Cancel">${icon("x")}</button>`;
   if (r.current?.key === i.key) return "";
   switch (i.state) {
     case "":
       return r.blocked
         ? ""
-        : `<button class="btn sm" data-get="${esc(i.key)}">${icon("download")}Start</button>`;
+        : `<button class="btn sm" data-get="${esc(i.key)}">${icon("sparkles")}Free up</button>`;
     case "queued":
       return cancel;
     case "downloaded":
     case "in_google":
-      return `${open}${cancel}`;
+      return cancel;
     case "failed":
       return `<button class="btn sm" data-get="${esc(i.key)}">${icon("retry")}Try again</button>${cancel}`;
     default:
@@ -92,14 +93,7 @@ function actions(i: StorageItem, r: StorageReport): string {
 function row(i: StorageItem, r: StorageReport): string {
   const s = stateOf(i, r);
   const cur = r.current?.key === i.key ? r.current : null;
-  const hint =
-    i.state === "downloaded"
-      ? "Saved on this server and checked. Delete it in Google Photos, then empty it from Google's Trash: GP Sync uploads it again by itself."
-      : i.state === "in_google"
-        ? "Google still has it. Open Google Photos › Library › Trash and delete it there too."
-        : i.state === "failed" || i.state === "counts"
-          ? (i.error ?? "")
-          : "";
+  const hint = ["downloaded", "in_google", "failed", "counts"].includes(i.state) ? (i.error ?? "") : "";
   return `<div class="row flex-wrap items-start px-4 py-3 sm:flex-nowrap">
     ${i.state === "" && !r.blocked ? `<input type="checkbox" class="mt-3 size-4 accent-[var(--accent)]" data-pick="${esc(i.key)}" ${picked.has(i.key) ? "checked" : ""} aria-label="Pick ${esc(i.name)}">` : '<span class="w-4"></span>'}
     ${thumbOf(i)}
@@ -147,7 +141,10 @@ function render(): void {
     );
     return;
   }
-  const waiting = r.items.filter((i) => i.state === "downloaded" || i.state === "in_google").length;
+  const busy = r.items.filter((i) =>
+    ["queued", "downloaded", "in_google", "checking"].includes(i.state),
+  ).length;
+  const oursCount = r.ours.counted > 0;
   const fresh = r.items.filter((i) => !i.state);
   const oursOk = r.ours.seen > 0 && r.ours.counted === 0;
   html(
@@ -158,10 +155,11 @@ function render(): void {
         : ""
     }
     ${r.error ? `<section class="card mb-4 p-4 text-sm text-bad">${esc(r.error)}</section>` : ""}
+    ${oursCount ? `<section class="card mb-4 flex items-start gap-3 p-4 text-sm">${icon("warn", "size-5 shrink-0 text-warn")}<div><div class="font-medium">GP Sync's uploads count against storage in this account</div><div class="mt-0.5 text-ink-3">Re-uploading wouldn't free anything, so nothing is deleted here.</div></div></section>` : ""}
     <div class="grid grid-cols-2 gap-4 xl:grid-cols-4">
       ${tile({ label: "Counts against storage", value: bytes(r.counted_bytes), ic: "cloud", sub: `${num(r.counted)} of ${num(r.total)} items` })}
       ${tile({ label: "Freed by GP Sync", value: bytes(r.freed.bytes), ic: "sparkles", sub: `${num(r.freed.count)} item${r.freed.count === 1 ? "" : "s"} moved`, tone: r.freed.count ? "good" : "" })}
-      ${tile({ label: "Waiting for you", value: num(waiting), ic: "hourglass", sub: waiting ? "Delete them in Google Photos" : "Nothing to delete" })}
+      ${tile({ label: "In progress", value: num(busy), ic: "hourglass", sub: busy ? "One at a time in this account" : "Nothing running" })}
       ${tile({
         label: "GP Sync uploads",
         value: r.ours.seen ? (oursOk ? "Free" : `${num(r.ours.counted)} count`) : "–",
@@ -174,7 +172,7 @@ function render(): void {
       <section class="card self-start">${cardHead("How it works", "info")}
         <ol class="card-b space-y-3 text-sm">
           <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">1</span><span><b>Downloaded</b> here and checked against Google's original.</span></li>
-          <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">2</span><span><b>You delete it</b> in Google Photos and its Trash.</span></li>
+          <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">2</span><span><b>Deleted in Google</b>, Trash included.</span></li>
           <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">3</span><span><b>Uploaded again</b> the free way, then the copy here is removed.</span></li>
         </ol>
         <div class="border-t border-line px-4 py-3 text-xs text-ink-3">Keeps quality, date, favourite, archive and caption. Albums, shared links and comments are lost.</div>
@@ -183,11 +181,11 @@ function render(): void {
         ${cardHead(
           "Biggest first",
           "layers",
-          r.blocked
+          r.blocked || oursCount
             ? ""
-            : `<button class="btn sm" id="st-picked" ${picked.size ? "" : "disabled"}>${icon("download")}Start picked (${picked.size})</button><button class="btn sm" id="st-next" ${fresh.length ? "" : "disabled"}>${icon("download")}Start 10 biggest</button>`,
+            : `<button class="btn sm" id="st-picked" ${picked.size ? "" : "disabled"}>${icon("sparkles")}Free picked (${picked.size})</button><button class="btn sm primary" id="st-next" ${fresh.length ? "" : "disabled"}>${icon("sparkles")}Free 10 biggest</button>`,
         )}
-        <p class="border-b border-line px-4 py-2.5 text-xs text-ink-3">One at a time. Downloads need free space here: ${bytes(r.free_space)} left.</p>
+        <p class="border-b border-line px-4 py-2.5 text-xs text-ink-3">Other accounts run alongside, and copies too. Downloads need free space here: ${bytes(r.free_space)} left.</p>
         ${
           r.items.length
             ? `<div class="divide-y divide-line">${r.items
@@ -203,6 +201,20 @@ function render(): void {
   );
 }
 
+/** Ask once, then queue: each item is downloaded, deleted in Google and uploaded again free. */
+function start(keys: string[]): boolean {
+  if (!keys.length) return false;
+  const what = keys.length === 1 ? "this item" : `${num(keys.length)} items`;
+  if (
+    !confirm(
+      `Free up ${what} in ${account}?\n\nEach is downloaded and checked, deleted in Google Photos (Trash included) and uploaded again for free. Quality, date, favourite, archive and caption are kept; albums, shared links and comments are lost.`,
+    )
+  )
+    return false;
+  void act("download", { keys }, `Freeing ${what}`);
+  return true;
+}
+
 function onClick(e: Event): void {
   const t = e.target as HTMLElement;
   const b = t.closest<HTMLElement>("button");
@@ -211,17 +223,17 @@ function onClick(e: Event): void {
   else if (b.id === "st-unblock") {
     if (confirm("Google counted a re-upload against storage last time. Try again anyway?"))
       void act("check", { unblock: true });
-  } else if (b.dataset.get) void act("download", { keys: [b.dataset.get] });
+  } else if (b.dataset.get) start([b.dataset.get]);
   else if (b.dataset.cancel) void act("cancel", { keys: [b.dataset.cancel] });
   else if (b.id === "st-picked") {
-    void act("download", { keys: [...picked] }, `${picked.size} queued`);
-    picked.clear();
+    if (start([...picked])) picked.clear();
   } else if (b.id === "st-next") {
-    const keys = (report?.items ?? [])
-      .filter((i) => !i.state)
-      .slice(0, 10)
-      .map((i) => i.key);
-    void act("download", { keys }, `${keys.length} queued`);
+    start(
+      (report?.items ?? [])
+        .filter((i) => !i.state)
+        .slice(0, 10)
+        .map((i) => i.key),
+    );
   } else if (b.id === "st-more") {
     shown += 50;
     render();
@@ -253,7 +265,7 @@ const storage: View = {
         const btn = document.getElementById("st-picked") as HTMLButtonElement | null;
         if (btn) {
           btn.disabled = !picked.size;
-          btn.innerHTML = `${icon("download")}Start picked (${picked.size})`;
+          btn.innerHTML = `${icon("sparkles")}Free picked (${picked.size})`;
         }
       }
     });
@@ -261,7 +273,9 @@ const storage: View = {
     timer = window.setInterval(() => {
       const r = report;
       const active =
-        r?.refreshing || r?.current || r?.items.some((i) => ["queued", "checking"].includes(i.state));
+        r?.refreshing ||
+        r?.current ||
+        r?.items.some((i) => ["queued", "downloaded", "checking"].includes(i.state));
       if (active || ++ticks % 8 === 0) void load(); // busy: every 4 s, else every 30 s
     }, 4000);
   },

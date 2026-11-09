@@ -57,6 +57,7 @@ def test_sign_in_page_and_cookie(server, media, monkeypatch):
     import urllib.parse
 
     monkeypatch.setattr(sync, "PASSWORD", "s3cret")
+    monkeypatch.setattr(sync, "WRONG_PASSWORD_DELAY", 0)
     host = urllib.parse.urlsplit(server).netloc
 
     def call(method, path, body=None, cookie=None):

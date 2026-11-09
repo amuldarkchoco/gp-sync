@@ -90,11 +90,16 @@ Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
 - **Folders and devices:** photos, videos, size and backup progress for any folder, or per phone
   (the folders phone backup apps make), with daily arrivals and their waiting, backed-up and failed
   counts. Arrival dates are inferred from filesystem timestamps, which can change.
-- **Free storage:** lists what counts against your Google storage, biggest first. One at a time,
-  GP Sync downloads an item and checks it is Google's original, you delete it in Google Photos,
-  and GP Sync uploads it again the free way and checks it no longer counts. GP Sync never
-  deletes anything in Google. Albums and shared links are not kept. This relies on the same
+- **Free storage:** lists what counts against your Google storage, biggest first. Press Free up
+  and, one at a time, GP Sync downloads an item, checks it is Google's original byte for byte,
+  deletes it in Google Photos (Trash included), uploads it again the free way and checks it no
+  longer counts. It stops if Google counts a re-upload, and deletes nothing in an account where
+  its own uploads count. Albums, shared links and comments are not kept. This relies on the same
   free upload as all GP Sync uploads, which Google could stop honouring.
+- **Fix dates:** photos and videos with no date inside (Snapchat saves, screenshots) that Google
+  dated by the upload. Press Fix and GP Sync replaces each in Google Photos with one uploaded
+  again with the right date, keeping favourite, archive, caption and GP Sync albums. It only
+  does so when the file on the server is exactly what was uploaded.
 - **Copy accounts:** choose individual photos and videos, or copy everything matching a type and
   year range, from one connected Google account to another (only what the other doesn't have), in
   original quality with dates, favourites, archive and captions. Nothing is deleted in either

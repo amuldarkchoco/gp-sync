@@ -79,6 +79,8 @@ export interface Status {
   max_accounts?: number;
   copies?: Record<string, { done: number; failed: number }>;
   copies_pending?: number;
+  /** Background work right now, per account (and copy pair). */
+  jobs?: Job[];
   /** Files with no date of their own, and fixes waiting for the user to delete the item in Google. */
   dates?: { undated: number; waiting: number };
   /** The user has seen the "album for files without a date" choice. */
@@ -355,7 +357,7 @@ export interface DatesReport {
   fixed: number;
   checked: number;
   album: string;
-  current: { key: string; done: number; total: number } | null;
+  current: { key: string; step?: "deleting" | "uploading"; done: number; total: number } | null;
   error: string;
 }
 export interface FileItem {
@@ -480,7 +482,12 @@ export interface StorageReport {
   error: string;
   /** Google counted one of our re-uploads: nothing more is moved. */
   blocked: boolean;
-  current: { key: string; step: "downloading" | "uploading"; done: number; total: number } | null;
+  current: {
+    key: string;
+    step: "downloading" | "deleting" | "uploading";
+    done: number;
+    total: number;
+  } | null;
   free_space: number;
   total: number;
   counted: number;
@@ -615,4 +622,15 @@ export function mediaUrl(name: string, download = false): string {
 
 export function previewUrl(name: string): string {
   return "api/preview?path=" + encodeURIComponent(name);
+}
+
+export interface Job {
+  kind: "library" | "storage" | "dates" | "copy";
+  account: string;
+  /** Copies: the destination account. */
+  to?: string;
+  name?: string;
+  step?: string;
+  done?: number;
+  total?: number;
 }

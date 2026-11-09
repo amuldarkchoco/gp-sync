@@ -1845,8 +1845,6 @@ def fmt_bytes(n):
 
 def run_round():
     """One scan and, if allowed, uploads for every account."""
-    from gpmc import Client  # imported here so the web page starts even if gpmc is broken
-
     st = get_settings()
     accs = dict(accounts())
     state["phase"] = "scanning"
@@ -1872,7 +1870,9 @@ def run_round():
             by_account[item[3]].append(item)
         for account, items in by_account.items():
             if account in accs:
-                upload_all(Client(auth_data=accs[account], log_level="WARNING"), items, account, st)
+                # The account's one login, shared with its other work (gpmc renews it when due),
+                # instead of signing in to Google again every round.
+                upload_all(_reclaim_client(account), items, account, st)
             if PAUSE_FILE.exists() or not upload_allowed(st):
                 break
     state["phase"] = "paused" if PAUSE_FILE.exists() else "scheduled" if not upload_allowed(st) else "idle"
@@ -2274,7 +2274,8 @@ def status_json():
             )
         },
         "copies_pending": state.get("copies_pending", 0),
-        # Files with no date of their own, and how many wait for the user to delete them in Google.
+        "jobs": background_jobs(),
+        # Files with no date of their own, and how many are queued to be fixed in Google.
         "dates": dict(
             zip(
                 ("undated", "waiting"),
@@ -2310,6 +2311,27 @@ def status_json():
     }
 
 
+def background_jobs():
+    """What runs in the background right now, across accounts: library reads, freeing storage,
+    fixing dates and copies. Each account (and copy pair) works on its own, side by side."""
+    jobs = [{"kind": "library", "account": a} for a in sorted(_refreshing)]
+
+    def add(kind, cur, **who):
+        if cur:
+            name = cur.get("name") or cur.get("key") or ""
+            name = rel(name) if name.startswith("/") else name
+            step = {"step": cur.get("step", ""), "done": cur.get("done", 0), "total": cur.get("total", 0)}
+            jobs.append({"kind": kind, **who, "name": name, **step})
+
+    for account, t in list(reclaim_state.items()):
+        add("storage", t.get("current"), account=account)
+    for account, t in list(dates_state.items()):
+        add("dates", t.get("current"), account=account)
+    for (src, dst), t in list(copy_state.items()):
+        add("copy", t.get("current"), account=src, to=dst)
+    return jobs
+
+
 _status_memo = {"at": 0.0, "key": None, "body": b""}
 
 
@@ -2327,15 +2349,18 @@ def status_body():
 
 # ---------------------------------------------------------------- free up Google storage
 # Photos and videos that count against the Google storage quota (for example ones the phone's
-# Google Photos app backed up) are downloaded and checked against Google's own fingerprint. The
-# user then deletes them in Google Photos: GP Sync never deletes anything there. Once an item is
-# gone, it is uploaded again the way all GP Sync uploads go, which doesn't count, and checked.
+# Google Photos app backed up) are downloaded and checked against Google's own fingerprint. Only
+# then is Google's copy deleted (Trash, then out of the Trash) and the original uploaded again the
+# way all GP Sync uploads go, which doesn't count, and checked. One item at a time.
 
 RECLAIM_DIR = DATA / "reclaim"
 GPMC_HOME = Path.home() / ".gpmc"  # where gpmc keeps its copy of each account's library list
 RECLAIM_KINDS = {1: "photo", 2: "video"}
 reclaim_wake = threading.Event()
-reclaim_state = {"refreshing": "", "error": "", "current": None}
+# Progress and the last error, per account: every account has a worker of its own, so one account's
+# long library read or download never holds up another's.
+reclaim_state = collections.defaultdict(lambda: {"current": None, "error": ""})
+_refreshing = set()  # accounts whose library list is being read
 
 
 def reclaim_blocked(account):
@@ -2376,10 +2401,10 @@ def storage_report(account, limit=500):
     out = {
         "account": account,
         "refreshed": float(refreshed) if refreshed else None,
-        "refreshing": reclaim_state["refreshing"] == account,
-        "error": reclaim_state["error"],
+        "refreshing": account in _refreshing,
+        "error": reclaim_state[account]["error"],
         "blocked": reclaim_blocked(account),
-        "current": reclaim_state["current"],
+        "current": reclaim_state[account]["current"],
         "free_space": shutil.disk_usage(DATA).free if DATA.exists() else 0,
     }
     rows = _library_rows(
@@ -2529,15 +2554,54 @@ def _download_urls(response):
     return [u for _, u in sorted(found, key=lambda x: x[0])][:3]
 
 
+_library_locks = {}
+_library_locks_guard = threading.Lock()
+
+
+def _library_lock(account):
+    with _library_locks_guard:
+        return _library_locks.setdefault(account, threading.Lock())
+
+
+def update_library(client, account):
+    """Bring this server's copy of the account's library list up to date. One read per account at a
+    time: its workers (free storage, fix dates, copies) would otherwise write the same list at once."""
+    with _library_lock(account):
+        client.update_cache(show_progress=False)
+        meta_set(f"library_refreshed:{account}", str(time.time()))
+
+
+_disk_lock = threading.Lock()
+_disk_reserved = [0]  # bytes promised to downloads in progress (several accounts download at once)
+
+
+@contextlib.contextmanager
+def _disk_space(size):
+    """Reserve room for one download, counting the ones already under way, or refuse."""
+    need = int((size or 0) * 1.1) + 512 * 1024**2
+    with _disk_lock:
+        if shutil.disk_usage(DATA).free - _disk_reserved[0] < need:
+            raise RuntimeError("Not enough free disk space for this file")
+        _disk_reserved[0] += need
+    try:
+        yield
+    finally:
+        with _disk_lock:
+            _disk_reserved[0] -= need
+
+
 def _download(client, account, key, dedup, name, size, taken, folder=None, track=None):
     """Download one item and prove it is Google's original (same SHA-1). Returns the path.
 
     `track` is the dict whose "current" shows progress (Free storage or account copy)."""
+    track = reclaim_state[account] if track is None else track
+    with _disk_space(size):
+        return _fetch(client, account, key, dedup, name, size, taken, folder, track)
+
+
+def _fetch(client, account, key, dedup, name, size, taken, folder, track):
     import requests
 
-    track = reclaim_state if track is None else track
-    if shutil.disk_usage(DATA).free < (size or 0) * 1.1 + 512 * 1024**2:
-        raise RuntimeError("Not enough free disk space for this file")
     folder = folder or RECLAIM_DIR / account / key
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / (clean_name(name) or f"{key}.bin")
@@ -2555,7 +2619,8 @@ def _download(client, account, key, dedup, name, size, taken, folder=None, track
                 f.write(block)
                 digest.update(block)
                 done += len(block)
-                track["current"] = {"key": key, "step": "downloading", "done": done, "total": size}
+                track["current"] = {**(track.get("current") or {}), "key": key, "step": "downloading", "done": done,
+                                    "total": size}  # fmt: skip
         if _b64_hash(digest.digest()) == dedup:
             tmp.replace(target)
             if taken:
@@ -2574,13 +2639,15 @@ def _set_reclaim(account, key, state_, error="", **cols):
     notify_change()
 
 
-def reclaim_step(make_client=None):
-    """Do the next piece of work. Returns True if there was something to do."""
+def reclaim_step(make_client=None, account=None):
+    """Do the next piece of work (for one account, or all). Returns True if there was something to do."""
     make_client = make_client or _reclaim_client
     rows = q(
         """SELECT account, media_key, dedup_key, name, size, taken, state, local, favorite, archived, caption,
                   new_key, checks FROM reclaim WHERE state IN ('queued', 'downloaded', 'in_google', 'checking')
-           ORDER BY state = 'queued', quota DESC"""
+                  AND (? IS NULL OR account=?)
+           ORDER BY state = 'queued', quota DESC""",
+        (account, account),
     )
     if not rows:
         return False
@@ -2594,28 +2661,40 @@ def reclaim_step(make_client=None):
         return clients[account]
 
     for account, key, dedup, name, size, taken, st_, local, fav, arch, cap, new_key, checks in rows:
+        track = reclaim_state[account]
         try:
             if st_ == "queued":
-                reclaim_state["current"] = {"key": key, "step": "downloading", "done": 0, "total": size}
+                track["current"] = {"key": key, "step": "downloading", "done": 0, "total": size, "name": name}
                 path = _download(client_for(account), account, key, dedup, name, size, taken)
                 _set_reclaim(account, key, "downloaded", local=str(path))
-                reclaim_state["error"] = ""
-                log(f"Downloaded {name} from Google ({fmt_bytes(size)}): delete it in Google Photos to free it", "info")
-                return True  # one download per step: the next one waits for the next call
+                track["error"] = ""
+                log(f"Downloaded {name} from Google ({fmt_bytes(size)})", "info")
+                return True  # one item per step: it is replaced in Google on the next call
             if st_ in ("downloaded", "in_google"):
                 if reclaim_blocked(account) or now - _reclaim_checked.get(key, 0) < 100:
-                    continue  # asked Google about it less than 2 minutes ago
+                    continue  # tried less than 2 minutes ago
                 _reclaim_checked[key] = now
-                client = client_for(account)
-                if client.api.find_remote_media_by_hash(base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))):
-                    continue  # the user hasn't deleted it yet (or it's still in Google's Trash)
-                did = True
-                reclaim_state["current"] = {"key": key, "step": "uploading", "done": 0, "total": size}
-                result = _reupload(client, Path(local), dedup, size, key)
-                if result is None:
+                if _own_uploads_count(account):
                     _set_reclaim(
-                        account, key, "in_google", "Still in Google Photos: also delete it from Google's Trash"
+                        account,
+                        key,
+                        st_,
+                        "GP Sync's own uploads count against storage in this account: nothing deleted",
                     )
+                    continue
+                client = client_for(account)
+                did = True
+                if client.api.find_remote_media_by_hash(base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))):
+                    # The downloaded copy is Google's original (checked byte for byte): replace it.
+                    track["current"] = {"key": key, "step": "deleting", "done": 0, "total": size, "name": name}
+                    if not _delete_in_google(client, dedup):
+                        _set_reclaim(account, key, "in_google", "Google hasn't deleted it yet: trying again soon")
+                        continue
+                    log(f"Deleted {name} in Google Photos to upload it again for free", "info")
+                track["current"] = {"key": key, "step": "uploading", "done": 0, "total": size, "name": name}
+                result = _reupload(client, Path(local), dedup, size, key, track, when=taken)
+                if result is None:
+                    _set_reclaim(account, key, "in_google", "Google still has it: trying again soon")
                     continue
                 _restore_details(client, dedup, fav, arch, cap)
                 _set_reclaim(account, key, "checking", new_key=result, checks=0)
@@ -2623,9 +2702,7 @@ def reclaim_step(make_client=None):
                 if now - _reclaim_checked.get(key, 0) < 60:
                     continue  # Google needs a moment to list a new upload: check once a minute
                 _reclaim_checked[key] = now
-                client = client_for(account)
-                client.update_cache(show_progress=False)
-                meta_set(f"library_refreshed:{account}", str(time.time()))
+                update_library(client_for(account), account)
                 found = _library_rows(
                     account, "SELECT quota_charged_bytes FROM remote_media WHERE media_key=?", (new_key,)
                 )
@@ -2648,31 +2725,32 @@ def reclaim_step(make_client=None):
             print(f"Free storage: {name}: {msg}", file=sys.stderr, flush=True)
             if st_ == "queued":
                 if outage := outage_kind(e):  # no internet or Google is down: try again later
-                    reclaim_state["error"] = outage
+                    track["error"] = outage
                     return False
                 _set_reclaim(account, key, "failed", msg)
                 return True
             _set_reclaim(account, key, st_, msg)  # tried again in 2 minutes
         finally:
-            reclaim_state["current"] = None
+            track["current"] = None
     return did
 
 
 _reclaim_checked = {}  # media key -> when Google was last asked about it
 
 
-def _reupload(client, path, dedup, size, key, track=None):
-    """Upload the downloaded original the free way. Returns the new media key, or None if Google
-    still has the old one (then nothing is uploaded)."""
+def _reupload(client, path, dedup, size, key, track, when=None):
+    """Upload the downloaded original the free way, dated `when` (unix seconds: the date Google
+    showed for it, so items without a date inside keep their place in the timeline). Returns the new
+    media key, or None if Google still has the old one (then nothing is uploaded)."""
     from rich.progress import Progress
 
-    track = reclaim_state if track is None else track
     phases = []
 
     def progress(ev):
         phases.append(ev.get("phase"))
         if ev.get("phase") == "uploading":
             track["current"] = {
+                **(track.get("current") or {}),
                 "key": key,
                 "step": "uploading",
                 "done": ev.get("bytes_completed") or 0,
@@ -2680,13 +2758,50 @@ def _reupload(client, path, dedup, size, key, track=None):
             }
 
     digest = base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))
-    with Progress(disable=True) as bar:
+    with Progress(disable=True) as bar, upload_date(client, when):
         result = client._upload_file(
             path, digest, bar, force_upload=False, use_quota=False, saver=False, progress_callback=progress
         )
     if "skipped" in phases:
         return None
     return next(iter(result.values()), "") or None
+
+
+def _delete_in_google(client, dedup):
+    """Delete one item in Google Photos for good: into Google's Trash, then out of it (an item in the
+    Trash would block the new upload). Only called once the original is safe here, checked byte for
+    byte. Returns True once Google no longer has it."""
+    digest = base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))
+    try:
+        client.api.move_remote_media_to_trash([dedup])
+    except Exception as e:  # already in the Trash (deleted by hand): deleting it from there still works
+        if outage_kind(e):
+            raise
+    client.api.delete_remote_media_permanently([dedup])
+    for wait in (0, 1, 2, 4):  # Google can take a moment to forget it
+        time.sleep(wait)
+        if not client.api.find_remote_media_by_hash(digest):
+            return True
+    return False
+
+
+def _own_uploads_count(account):
+    """True when GP Sync's own uploads count against storage in this account: freeing would only
+    move the cost, so nothing is deleted there."""
+    ours = [
+        _b64_hash(bytes.fromhex(h)) for (h,) in q("SELECT sha1 FROM files WHERE sha1 != '' AND account=?", (account,))
+    ]
+    for i in range(0, len(ours), 500):
+        part = ours[i : i + 500]
+        rows = _library_rows(
+            account,
+            f"""SELECT 1 FROM remote_media WHERE quota_charged_bytes > 0 AND COALESCE(trash_timestamp, 0) = 0
+                AND dedup_key IN ({",".join("?" * len(part))}) LIMIT 1""",
+            part,
+        )
+        if rows:
+            return True
+    return False
 
 
 def _restore_details(client, dedup, favorite, archived, caption):
@@ -2704,39 +2819,101 @@ def _restore_details(client, dedup, favorite, archived, caption):
 
 def refresh_library(account, make_client=None):
     """Read the account's library list from Google (the first time can take a few minutes)."""
-    reclaim_state.update(refreshing=account, error="")
+    _refreshing.add(account)
+    reclaim_state[account]["error"] = ""
     notify_change()
     try:
-        (make_client or _reclaim_client)(account).update_cache(show_progress=False)
-        meta_set(f"library_refreshed:{account}", str(time.time()))
+        update_library((make_client or _reclaim_client)(account), account)
     except Exception as e:
-        reclaim_state["error"] = f"{type(e).__name__}: {e}"[:300]
+        reclaim_state[account]["error"] = f"{type(e).__name__}: {e}"[:300]
     finally:
-        reclaim_state["refreshing"] = ""
+        _refreshing.discard(account)
         notify_change()
 
 
 _refresh_requests = collections.deque()
+_refresh_lock = threading.Lock()
+
+
+def _take_refresh(account):
+    """True (once) if someone asked for this account's library to be read."""
+    with _refresh_lock:
+        if account not in _refresh_requests:
+            return False
+        while account in _refresh_requests:
+            _refresh_requests.remove(account)
+        return True
+
+
+class Lanes:
+    """Background work in lanes that run side by side: one thread per key (an account, or a pair of
+    accounts), so one account's work never waits for another's. A lane starts when woken and stops
+    after a quiet spell; whoever calls wake() keeps lanes with pending work alive."""
+
+    def __init__(self, name, step, idle=600):
+        self.name, self.step, self.idle = name, step, idle
+        self.threads, self.wakes = {}, {}
+        self.lock = threading.Lock()
+
+    def wake(self, keys):
+        for key in keys:
+            with self.lock:  # the event is set under the lock, so a lane never stops after a wake
+                ev = self.wakes.setdefault(key, threading.Event())
+                lane = self.threads.get(key)
+                if lane is None or not lane.is_alive():
+                    lane = threading.Thread(target=self._run, args=(key,), daemon=True, name=f"{self.name} {key}")
+                    self.threads[key] = lane
+                    lane.start()
+                ev.set()
+
+    def _run(self, key):
+        ev = self.wakes[key]
+        quiet = 0
+        while True:
+            ev.clear()
+            try:
+                busy = self.step(key)
+            except Exception as e:
+                print(f"{self.name} ({key}): {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+                busy = False
+            if busy:
+                quiet = 0
+            elif quiet >= self.idle:
+                with self.lock:
+                    if not ev.is_set():
+                        self.threads.pop(key, None)
+                        return
+            if not ev.wait(1 if busy else 60) and not busy:
+                quiet += 60
+
+
+def _account_step(account):
+    """One account's Google work: read its library when asked, free storage, fix dates."""
+    busy = False
+    while _take_refresh(account):
+        refresh_library(account)
+        busy = True
+    busy = reclaim_step(account=account) or busy
+    return datefix_step(only=account) or busy
+
+
+account_lanes = Lanes("Google work", _account_step)
 
 
 def reclaim_worker():
-    """One item at a time. Items waiting for the user to delete them are checked every 2 minutes."""
+    """Keeps a lane per connected account going (free storage, fix dates, library reads, all side by
+    side across accounts), and adds albums and captions for every account."""
     with contextlib.suppress(Exception):  # reset work cut short by a restart
         q("UPDATE reclaim SET state='queued' WHERE state='downloading'")
     while True:
         reclaim_wake.clear()
-        try:
-            while _refresh_requests:
-                refresh_library(_refresh_requests.popleft())
-            busy = reclaim_step()
-        except Exception as e:
-            print(f"Free storage: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-            busy = False
-        for step in (datefix_step, undated_album_step, sources_step):
+        account_lanes.wake(dict.fromkeys([*(a for a, _ in accounts()), *list(_refresh_requests)]))
+        busy = False
+        for step in (undated_album_step, sources_step):
             try:
                 busy = step() or busy
             except Exception as e:
-                print(f"Dates: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+                print(f"Albums: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         reclaim_wake.wait(1 if busy else 120)
 
 
@@ -2745,13 +2922,13 @@ def reclaim_worker():
 # saves, screenshots, chat pictures) get the date sent with the upload, which gpmc takes from the
 # file's modified time: often only when the file was copied here. So for those GP Sync sends a
 # better date (one the user picked, or the earliest identical copy), puts them in an album of
-# their own, and can fix ones already uploaded: the user deletes them in Google Photos, GP Sync
-# uploads them again with the right date. Facts about dates live in the Turso database.
+# their own, and can fix ones already uploaded: GP Sync replaces Google's copy with one uploaded
+# again with the right date. Facts about dates live in the Turso database.
 
 DATE_SLACK = 120  # seconds Google's date may be off before we call it wrong
 SAME_SIZE_HASHES = 50  # at most this many same-size files are fingerprinted to find copies of one file
-dates_state = {"current": None, "error": ""}
-_dates_checked = {}  # path -> when Google was last asked whether the user deleted it
+dates_state = collections.defaultdict(lambda: {"current": None, "error": ""})  # per account
+_dates_checked = {}  # path -> when this file was last tried
 _dates_checked_lock = threading.Lock()
 
 
@@ -2870,26 +3047,38 @@ def best_date(path, size, mtime, sha1hex, fingerprint=True):
     return float(mtime), "file"
 
 
+_upload_when = threading.local()  # the date this thread's next commit sends, if any
+
+
 @contextlib.contextmanager
 def upload_date(client, when, mtime=None):
     """Upload with `when` (unix seconds) as the date, instead of the file's modified time that gpmc
-    sends. Wraps gpmc's commit_upload for one upload; nothing changes when there is no date to send."""
+    sends. One login (client) is shared by every worker of an account, which upload at the same
+    time: the date is kept per thread, so it never reaches another worker's upload. Nothing changes
+    when there is no date to send."""
     if when is None or (mtime is not None and int(when) == int(mtime)):
         yield
         return
     api = client.api
-    original = api.commit_upload
+    original = getattr(api, "commit_upload", None)
+    if original is None:  # not gpmc (tests): nothing to wrap
+        yield
+        return
+    if not getattr(original, "_gp_dated", False):  # wrapped once, for good
 
-    def commit(*args, **kwargs):
-        kwargs["upload_timestamp"] = int(when)
-        return original(*args, **kwargs)
+        def commit(*args, **kwargs):
+            when_ = getattr(_upload_when, "value", None)
+            if when_ is not None:
+                kwargs["upload_timestamp"] = int(when_)
+            return original(*args, **kwargs)
 
-    api.commit_upload = commit
+        commit._gp_dated = True
+        api.commit_upload = commit
+    _upload_when.value = when
     try:
         yield
     finally:
-        with contextlib.suppress(AttributeError):
-            del api.commit_upload  # back to gpmc's own method
+        _upload_when.value = None
 
 
 def _main_account(account):
@@ -3040,7 +3229,7 @@ def dates_report(account):
         "account": account,
         "accounts": [a for a, _ in accounts()],
         "refreshed": refreshed or None,
-        "refreshing": reclaim_state["refreshing"] == account,
+        "refreshing": account in _refreshing,
         "items": items,
         "undated": len(items),
         "wrong": sum(i["wrong"] for i in items),
@@ -3048,8 +3237,8 @@ def dates_report(account):
         "fixed": sum(i["fix"] == "done" for i in items),
         "checked": sq("SELECT COUNT(*) FROM media_dates")[0][0],
         "album": cfg["name"] if cfg["album"] else "",
-        "current": dates_state["current"],
-        "error": dates_state["error"],
+        "current": dates_state[account]["current"],
+        "error": dates_state[account]["error"],
     }
 
 
@@ -3075,7 +3264,7 @@ def dates_set(name, when):
 
 
 def dates_fix(names):
-    """Start fixing these files' dates: they wait for the user to delete them in Google Photos."""
+    """Queue these files to be replaced in Google Photos with the right date."""
     n = 0
     for name in names:
         path = _date_target(name)
@@ -3086,7 +3275,7 @@ def dates_fix(names):
         if not sha1:
             sha1 = media.sha1_file(path).hex()
             remember_sha1(path, sha1)
-        # Favourite, archive and caption are read now: they are gone once the user deletes it.
+        # Favourite, archive and caption are read now: they are gone once Google's copy is deleted.
         found = _google_dates(_main_account(account), [_b64_hash(bytes.fromhex(sha1))]).get(
             _b64_hash(bytes.fromhex(sha1))
         )
@@ -3148,39 +3337,46 @@ def _set_fix(path, fix, error=""):
     notify_change()
 
 
-def datefix_step(make_client=None):
-    """Upload again, with the right date, files the user deleted in Google Photos. Each waiting file is
-    checked every 2 minutes. Returns True if one was uploaded."""
+def datefix_step(make_client=None, only=None):
+    """Replace queued files in Google Photos with the right date: Google's copy is deleted (once the
+    file here is checked to be the same) and the file uploaded again. A file Google still has is
+    tried again after 2 minutes. `only`: just this account's files. Returns True if one was uploaded."""
     make_client = make_client or _reclaim_client
     rows = sq("SELECT path, sha1, favorite, archived, caption FROM media_dates WHERE fix IN ('waiting','in_google')")
     now = time.time()
     did = False
     for path, sha1, fav, arch, cap in rows:
+        found = q("SELECT size, mtime, account FROM files WHERE path=? AND status IN ('uploaded','exists')", (path,))
+        account = _main_account(found[0][2]) if found else ""
+        if only is not None and account != only:
+            continue  # another account's worker does it
         with _dates_checked_lock:
             if now - _dates_checked.get(path, 0) < 100:
                 continue
             _dates_checked[path] = now
-        found = q("SELECT size, mtime, account FROM files WHERE path=? AND status IN ('uploaded','exists')", (path,))
         if not found or not sha1:
             _set_fix(path, "failed", "This file isn't on the server any more")
             continue
-        size, mtime, account = found[0]
-        account = _main_account(account)
+        size, mtime, _account = found[0]
+        track = dates_state[account]
         name = rel(path)
         try:
             client = make_client(account)
             digest = bytes.fromhex(sha1)
-            if client.api.find_remote_media_by_hash(digest):
-                continue  # the user hasn't deleted it yet (or it's still in Google's Trash)
+            # Google's copy is replaced only when the file here is exactly what was uploaded.
             if media.sha1_file(path) != digest:
                 _set_fix(path, "failed", "The file here changed after it was uploaded")
                 continue
+            if client.api.find_remote_media_by_hash(digest):
+                track["current"] = {"key": name, "step": "deleting", "done": 0, "total": size}
+                if not _delete_in_google(client, _b64_hash(digest)):
+                    _set_fix(path, "in_google", "Google hasn't deleted it yet: trying again soon")
+                    continue
             when = best_date(path, size, mtime, sha1, fingerprint=False)[0]
-            dates_state["current"] = {"key": name, "step": "uploading", "done": 0, "total": size}
-            with upload_date(client, when):
-                key = _reupload(client, Path(path), _b64_hash(digest), size, name, track=dates_state)
+            track["current"] = {"key": name, "step": "uploading", "done": 0, "total": size}
+            key = _reupload(client, Path(path), _b64_hash(digest), size, name, track, when=when)
             if key is None:
-                _set_fix(path, "in_google", "Google still has it: also delete it from Google's Trash")
+                _set_fix(path, "in_google", "Google still has it: trying again soon")
                 continue
             _restore_details(client, _b64_hash(digest), fav, arch, cap)
             q("UPDATE files SET media_key=?, status='uploaded', updated=? WHERE path=?", (key, time.time(), path))
@@ -3188,18 +3384,18 @@ def datefix_step(make_client=None):
             sq("DELETE FROM undated_album WHERE path=? AND account=?", (path, account))  # added again
             if (album := album_name(path, get_settings()["albums"])) is not None:
                 add_to_album(client, account, album, [key])
-            dates_state["error"] = ""
+            track["error"] = ""
             log(f"Fixed the date of {name}: {time.strftime('%Y-%m-%d %H:%M', time.gmtime(when))} UTC", "uploaded", name)
             did = True
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"[:300]
             print(f"Fix dates: {name}: {msg}", file=sys.stderr, flush=True)
             if outage := outage_kind(e):
-                dates_state["error"] = outage
+                track["error"] = outage
                 return did
             sq("UPDATE media_dates SET error=? WHERE path=?", (msg, path))  # tried again in 2 minutes
         finally:
-            dates_state["current"] = None
+            track["current"] = None
     return did
 
 
@@ -3486,7 +3682,7 @@ def sources_report(source="", limit=600):
         "settings": cfg,
         "account": account,
         "refreshed": float(refreshed) if refreshed else None,
-        "refreshing": bool(account) and reclaim_state["refreshing"] == account,
+        "refreshing": bool(account) and account in _refreshing,
         "needs_library": sources_state["needs_library"],
         "error": sources_state["error"],
     }
@@ -3529,7 +3725,8 @@ def sources_accept_dates(names):
 
 COPY_DIR = DATA / "copy"
 COPY_CHECK_EVERY = 25  # after this many copies, check with Google that they don't count
-copy_state = {"current": None, "error": ""}
+# Progress and the last error per (source, destination): each pair copies on its own worker.
+copy_state = collections.defaultdict(lambda: {"current": None, "error": ""})
 copy_wake = threading.Event()
 _OWNED = "origin = 'self' AND COALESCE(trash_timestamp, 0) = 0 AND COALESCE(is_locked, 0) = 0 AND is_canonical"
 
@@ -3605,10 +3802,10 @@ def copy_report(src, dst):
         "dst": dst,
         "listed": {"src": src_rows is not None, "dst": dst_keys is not None},
         "refreshed": {"src": refreshed(src), "dst": refreshed(dst)},
-        "refreshing": reclaim_state["refreshing"] in (src, dst) or any(a in (src, dst) for a in _refresh_requests),
-        "error": copy_state["error"] or reclaim_state["error"],
+        "refreshing": bool(_refreshing & {src, dst}) or any(a in (src, dst) for a in _refresh_requests),
+        "error": copy_state[(src, dst)]["error"] or reclaim_state[src]["error"] or reclaim_state[dst]["error"],
         "paused": meta_get("copy_paused") == "1",
-        "current": copy_state["current"],
+        "current": copy_state[(src, dst)]["current"],
         "src_total": len(src_rows or []),
         "in_dst": in_dst,
         "duplicates": {
@@ -3757,8 +3954,7 @@ def _verify_copies(dst_client, src, dst, force=False):
     )
     if not rows or (len(rows) < COPY_CHECK_EVERY and not force):
         return False
-    dst_client.update_cache(show_progress=False)
-    meta_set(f"library_refreshed:{dst}", str(time.time()))
+    update_library(dst_client, dst)
     for key, new_key, name, checks in rows:
         found = _library_rows(dst, "SELECT quota_charged_bytes FROM remote_media WHERE media_key=?", (new_key,))
         if found and found[0][0]:
@@ -3776,31 +3972,38 @@ def _verify_copies(dst_client, src, dst, force=False):
     return True
 
 
-def copy_step(make_client=None):
-    """Copy the next item. Returns True if there was something to do."""
+def copy_step(make_client=None, pair=None):
+    """Copy the next item (of one (source, destination) pair, or any). Returns True if there was
+    something to do."""
     make_client = make_client or _reclaim_client
     if meta_get("copy_paused") == "1":
         return False
+    src_, dst_ = pair or (None, None)
     row = q(
         """SELECT src, dst, media_key, dedup_key, name, size, taken, favorite, archived, caption FROM copyjobs
-           WHERE state='queued' ORDER BY taken DESC LIMIT 1"""
+           WHERE state='queued' AND (? IS NULL OR (src=? AND dst=?)) ORDER BY taken DESC LIMIT 1""",
+        (src_, src_, dst_),
     )
     if not row:  # the list is done: check the last copies (once a minute until Google lists them)
-        for s_, d in q("SELECT DISTINCT src, dst FROM copyjobs WHERE state='copied'"):
+        for s_, d in q(
+            "SELECT DISTINCT src, dst FROM copyjobs WHERE state='copied' AND (? IS NULL OR (src=? AND dst=?))",
+            (src_, src_, dst_),
+        ):
             _verify_copies(make_client(d), s_, d, force=True)
         return False
     src, dst, key, dedup, name, size, taken, fav, arch, cap = row[0]
+    track = copy_state[(src, dst)]
     connected = dict(accounts())
     if src not in connected or dst not in connected:  # an account was removed: wait, don't fail it all
-        copy_state["error"] = f"{src if src not in connected else dst} is no longer connected. Copying is paused."
+        track["error"] = f"{src if src not in connected else dst} is no longer connected. Copying is paused."
         meta_set("copy_paused", "1")
         return False
-    folder = COPY_DIR / key
+    folder = COPY_DIR / f"{dst}-{key}"  # the same item can be copied to two accounts at once
     try:
         source, target = make_client(src), make_client(dst)
-        copy_state["current"] = {"key": key, "step": "downloading", "done": 0, "total": size, "name": name}
-        path = _download(source, src, key, dedup, name, size, taken, folder=folder, track=copy_state)
-        new_key = _reupload(target, path, dedup, size, key, track=copy_state)
+        track["current"] = {"key": key, "step": "downloading", "done": 0, "total": size, "name": name}
+        path = _download(source, src, key, dedup, name, size, taken, folder=folder, track=track)
+        new_key = _reupload(target, path, dedup, size, key, track, when=taken)
         if new_key is None:
             _set_copy(src, dst, key, "exists")
         else:
@@ -3810,29 +4013,33 @@ def copy_step(make_client=None):
                 _verify_copies(target, src, dst)
             except Exception as e:
                 print(f"Account copy: check failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        copy_state["error"] = ""
+        track["error"] = ""
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"[:300]
         print(f"Account copy: {name}: {msg}", file=sys.stderr, flush=True)
         if outage := outage_kind(e):  # Google or the internet is down: keep it queued, try again later
-            copy_state["error"] = outage
+            track["error"] = outage
             return False
         _set_copy(src, dst, key, "failed", msg)
     finally:
-        copy_state["current"] = None
+        track["current"] = None
         shutil.rmtree(folder, ignore_errors=True)
     return True
 
 
+copy_lanes = Lanes("Account copy", lambda pair: copy_step(pair=pair))
+
+
 def copy_worker():
+    """A lane per (source, destination) pair with work: copies to different accounts run side by side."""
     while True:
+        copy_wake.clear()
         try:
-            busy = copy_step()
+            pairs = q("SELECT DISTINCT src, dst FROM copyjobs WHERE state IN ('queued', 'copied')")
+            copy_lanes.wake([(s_, d) for s_, d in pairs])
         except Exception as e:
             print(f"Account copy: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-            busy = False
-        copy_wake.wait(0.5 if busy else 60)
-        copy_wake.clear()
+        copy_wake.wait(30)
 
 
 # ---------------------------------------------------------------- uploads from phones
@@ -4141,6 +4348,9 @@ font-weight:600;background:#0a84ff;cursor:pointer}button:active{transform:scale(
 <button type="submit">Sign in</button><div class="e">{error}</div></form></body></html>"""
 
 
+WRONG_PASSWORD_DELAY = 1  # seconds
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -4301,7 +4511,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             self.send_header("Location", "./")
         else:
-            time.sleep(1)  # slows down guessing
+            time.sleep(WRONG_PASSWORD_DELAY)  # slows down guessing
             self.send_header("Location", "login?e=1")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -4584,7 +4794,8 @@ class Handler(BaseHTTPRequestHandler):
             accs = dict(accounts())
             if path == "/api/copy/pause":
                 meta_set("copy_paused", "1" if req.get("paused") else "0")
-                copy_state["error"] = ""
+                for t in copy_state.values():
+                    t["error"] = ""
                 copy_wake.set()
                 self.json({"ok": True})
             elif src not in accs or dst not in accs or src == dst:

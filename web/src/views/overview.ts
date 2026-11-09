@@ -4,6 +4,7 @@ import { $, $$, animateChange, esc, html } from "../lib/dom";
 import { ago, bytes, clock, duration, fileName, ms, num, pct, speed } from "../lib/format";
 import { icon } from "../lib/icons";
 import { NetChart, rangeButtons, type Range } from "../lib/netchart";
+import { jobLink, jobStep, jobTitle } from "../lib/jobs";
 import { badge, cardHead, etaText, eventMeta, openAttrs, phaseInfo, thumb, tile } from "../lib/ui";
 import type { View } from "./view";
 
@@ -288,6 +289,23 @@ function nowAction(s: Status): string {
   return "";
 }
 
+/** Background work across accounts, under the current upload: one line each, with progress. */
+function jobsList(s: Status): string {
+  const jobs = s.jobs ?? [];
+  if (!jobs.length) return "";
+  return `<div class="border-t border-line px-4 py-3">
+    <div class="label mb-2">Also running</div>
+    <ul class="space-y-2.5">${jobs
+      .map((j) => {
+        const step = jobStep(j);
+        const bar = j.total
+          ? `<div class="bar mt-1.5 h-1.5"><i style="width:${pct(j.done ?? 0, j.total)}%"></i></div>`
+          : "";
+        return `<li><a href="${jobLink(j)}" class="block rounded-lg hover:text-ink"><div class="flex items-center gap-2 text-sm">${icon(j.kind === "library" ? "refresh" : j.kind === "copy" ? "users" : j.kind === "dates" ? "clock" : "cloud", `size-4 shrink-0 text-accent ${j.kind === "library" ? "spin" : ""}`)}<span class="truncate font-medium">${esc(jobTitle(j))}</span></div>${step ? `<div class="truncate pl-6 text-xs text-ink-3">${esc(step)}</div>` : ""}${bar ? `<div class="pl-6">${bar}</div>` : ""}</a></li>`;
+      })
+      .join("")}</ul></div>`;
+}
+
 function upNext(s: Status, current: string): string {
   const next = (s.pending ?? []).filter((n) => n !== current).slice(0, 4);
   if (!next.length) return "";
@@ -444,6 +462,7 @@ const overview: View = {
       <section class="card lg:col-span-6 xl:col-span-4" data-card="ov-now">
         ${cardHead("Now", "cloudUp", '<a href="#/upload" class="hover:text-ink">Upload from phone ›</a>')}
         <div class="card-b" id="ov-now"></div>
+        <div id="ov-jobs"></div>
       </section>
 
       <section class="card lg:col-span-6 xl:col-span-4" data-card="ov-recent">
@@ -679,6 +698,7 @@ const overview: View = {
              <div class="stat-tile"><div class="num text-lg">${num(left)}</div><div class="text-[11px] text-ink-3">Waiting</div></div>
            </div>${upNext(s, "")}`,
     );
+    html($("#ov-jobs"), jobsList(s));
 
     html(
       $("#ov-recent"),
