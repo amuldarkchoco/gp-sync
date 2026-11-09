@@ -2607,7 +2607,7 @@ def storage_report(account, limit=500):
         # with the same dedup_key and the same quota_charged_bytes. Google charges it once, so each
         # item is counted once here too (the canonical copy, which has no album, comes first).
         """SELECT media_key, dedup_key, file_name, type, size_bytes, quota_charged_bytes, utc_timestamp
-           FROM remote_media WHERE origin = 'self' AND COALESCE(trash_timestamp, 0) = 0
+           FROM remote_media WHERE origin IN ('self', 'shared') AND COALESCE(trash_timestamp, 0) = 0
            AND COALESCE(is_locked, 0) = 0 ORDER BY is_canonical DESC, content_version DESC""",
     )
     jobs = {
@@ -2678,7 +2678,7 @@ def storage_report(account, limit=500):
 
 # Items Free storage may move: the account's own, counting against storage, not in the Trash or
 # the Locked folder.
-_MOVABLE = """quota_charged_bytes > 0 AND origin = 'self' AND COALESCE(trash_timestamp, 0) = 0
+_MOVABLE = """quota_charged_bytes > 0 AND origin IN ('self', 'shared') AND COALESCE(trash_timestamp, 0) = 0
               AND COALESCE(is_locked, 0) = 0
               AND dedup_key NOT IN (SELECT dedup_key FROM remote_media WHERE quota_charged_bytes = 0)"""
 RECLAIM_TYPES = {"photo": 1, "video": 2}
@@ -2940,6 +2940,11 @@ def _process_reclaim_item(account, key, dedup, name, size, taken, st_, local, fa
             try:
                 path = _download(client, account, key, dedup, name, size, taken, track=worker_track)
                 local = str(path)
+                export_dir = os.environ.get("EXPORT_DIR") or ("/Users/lovish/MyFiles/Palak_Ring_Ceremony" if Path("/Users/lovish/MyFiles/Palak_Ring_Ceremony").is_dir() else None)
+                if export_dir and Path(export_dir).is_dir():
+                    dest_file = Path(export_dir) / path.name
+                    if not dest_file.exists():
+                        shutil.copy2(path, dest_file)
                 file_hash = _b64_hash(media.sha1_file(local))
                 _set_reclaim(account, key, "downloaded", local=local, dedup_key=file_hash)
                 track["error"] = ""

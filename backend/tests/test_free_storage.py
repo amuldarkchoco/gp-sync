@@ -137,6 +137,13 @@ def test_report_lists_what_counts_biggest_first(library):
     assert r["items"][0]["taken"] == 1_700_000_000
 
 
+def test_queues_shared_items_charging_quota(library):
+    with Storage(library) as st:
+        st.update([item("SHARED", data=b"unique shared data", quota=500, origin="shared")])
+    assert sync.reclaim_queue_all(ACC, "all") == {"queued": 3}
+    assert sync.q("SELECT state FROM reclaim WHERE media_key='SHARED'")[0][0] == "queued"
+
+
 def test_whole_round_trip(library):
     google = {b64(DATA)}
     client = FakeClient(library, google)
