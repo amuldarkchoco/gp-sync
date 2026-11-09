@@ -429,7 +429,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 const upload: View = {
-  subtitle: "Send photos and videos from your phone to this server and Google Photos",
+  subtitle: "Send files from this device",
   mount(el) {
     el.innerHTML = `
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
@@ -464,7 +464,7 @@ const upload: View = {
           <p class="flex gap-2">${icon("ok", "mt-0.5 size-4 shrink-0 text-good")}<span>Files are stored on ${esc(host())} first, then backed up to Google Photos in original quality.</span></p>
           <p class="flex gap-2">${icon("refresh", "mt-0.5 size-4 shrink-0 text-ink-3")}<span>Big videos go up in pieces. If Wi-Fi drops, the upload continues where it stopped.</span></p>
           <p class="flex gap-2">${icon("copy", "mt-0.5 size-4 shrink-0 text-ink-3")}<span>Photos already on ${esc(host())} are recognised and not stored twice.</span></p>
-          <p class="flex gap-2">${icon("phone", "mt-0.5 size-4 shrink-0 text-ink-3")}<span>Keep this page open while files upload: phones pause web pages in the background. The screen stays on while uploading where the phone allows it.</span></p>
+          <p class="flex gap-2">${icon("phone", "mt-0.5 size-4 shrink-0 text-ink-3")}<span>Keep this page open while uploading.</span></p>
           ${shareTip()}
         </div>
       </section>

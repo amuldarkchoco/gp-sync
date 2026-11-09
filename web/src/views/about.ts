@@ -98,7 +98,7 @@ function list(items: Credit[]): string {
 }
 
 const about: View = {
-  subtitle: "Version, technology and credits",
+  subtitle: "Version and credits",
   mount(el) {
     el.innerHTML = `
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
@@ -108,7 +108,7 @@ const about: View = {
           <img src="icon.svg" alt="" class="size-20 rounded-2xl shadow-2xl">
           <div class="min-w-0 flex-1">
             <h2 class="text-2xl font-semibold">GP Sync</h2>
-            <p class="mt-1 text-sm text-ink-2">Backs up the photos and videos on your server, NAS or Umbrel to Google Photos in original quality. Your files are only read, never changed.</p>
+            <p class="mt-1 text-sm text-ink-2">Backs up your server's photos and videos to Google Photos in original quality. Files here are never changed.</p>
             <p class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm"><span class="flex items-center gap-1.5">${icon("user", "size-4 text-ink-3")}Made by <a class="font-medium text-accent" href="https://github.com/kshanxs" target="_blank" rel="noopener">kshanxs</a></span><span class="flex items-center gap-1.5 text-ink-2">${icon("license", "size-4 text-ink-3")}MIT license · © 2026 kshanxs</span></p>
             <div class="mt-3 flex flex-wrap gap-1.5" id="ab-badges"><span class="skeleton h-5 w-40"></span></div>
           </div>

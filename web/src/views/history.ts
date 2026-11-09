@@ -149,7 +149,7 @@ function renderTotals(t: Totals): void {
 }
 
 const historyView: View = {
-  subtitle: "What was backed up, day by day",
+  subtitle: "Backups, day by day",
   mount(el) {
     el.innerHTML = `
     <div class="grid grid-cols-2 gap-4 md:grid-cols-3 2xl:grid-cols-6" id="h-tiles">${'<div class="card skeleton h-28"></div>'.repeat(6)}</div>

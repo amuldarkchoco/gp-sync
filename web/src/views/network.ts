@@ -82,7 +82,7 @@ async function loadSlow(): Promise<void> {
 }
 
 const network: View = {
-  subtitle: "Live speed, Google response time and data used",
+  subtitle: "Speed and data used",
   mount(el) {
     el.innerHTML = `
     <div class="grid grid-cols-2 gap-4 xl:grid-cols-4">

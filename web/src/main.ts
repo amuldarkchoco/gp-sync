@@ -7,7 +7,8 @@ import { icon, type IconName } from "./lib/icons";
 import { onMode, onStatus, refresh, startPolling, status } from "./lib/store";
 import { install, installState, onInstallChange } from "./lib/install";
 import { openViewer } from "./lib/viewer";
-import { setTheme, initTheme } from "./lib/theme";
+import { initTheme } from "./lib/theme";
+import { glassToggle, wireGlassToggles } from "./lib/glass-toggle";
 import { phaseBadge, phaseInfo, syncChips, thumbFallback } from "./lib/ui";
 import type { View } from "./views/view";
 import about from "./views/about";
@@ -24,6 +25,7 @@ import settings from "./views/settings";
 import dates from "./views/dates";
 import sources from "./views/sources";
 import { askUndated } from "./lib/undated";
+import { watchSegs } from "./lib/fit-segs";
 import storage from "./views/storage";
 import upload from "./views/upload";
 
@@ -91,18 +93,16 @@ function shell(): string {
 
     <div class="flex min-w-0 flex-1 flex-col">
       <header id="topbar" class="app-topbar z-30 flex shrink-0 items-center gap-3 border-b border-line px-4 lg:px-6" style="padding-top:env(safe-area-inset-top);height:calc(4rem + env(safe-area-inset-top))">
-        <img src="icon.svg" alt="" class="size-8 rounded-lg lg:hidden">
         <div class="min-w-0 flex-1">
-          <h1 class="truncate text-base font-semibold tracking-tight lg:text-lg" id="page-title">Overview</h1>
-          <div class="hidden truncate text-xs text-ink-3 sm:block" id="page-sub"></div>
+          <h1 class="keep-line truncate text-lg font-semibold tracking-tight" id="page-title">Overview</h1>
         </div>
-        <span class="lg:hidden" id="top-phase"></span>
+        <span class="lg:hidden max-[420px]:hidden" id="top-phase"></span>
         <span class="hidden lg:block"><span id="live" class="badge good hidden" data-tip="Updates arrive the moment something happens"><span class="dot live"></span>Live</span></span>
         <span class="hidden" id="offline">${'<span class="badge bad">' + icon("cloudOff") + "Offline</span>"}</span>
         <button class="btn icon hidden" id="btn-install" title="Install app" aria-label="Install app">${icon("download")}</button>
         <button class="btn icon" id="btn-sync" title="Scan now" aria-label="Scan now">${icon("refresh")}</button>
         <button class="btn icon" id="btn-pause" title="Pause" aria-label="Pause">${icon("pause")}</button>
-        <button class="btn icon max-sm:hidden" id="btn-theme" title="Theme" aria-label="Switch theme">${icon("moon")}</button>
+        ${glassToggle("sm")}
         <a class="btn primary hidden sm:inline-flex" href="#/upload" aria-label="Add photos and videos from this device" title="Add photos and videos from this device">${icon("upload")}<span>Add files</span></a>
       </header>
       <div id="ptr" aria-hidden="true" style="top:calc(4rem + env(safe-area-inset-top))"><svg viewBox="0 0 40 40"><circle class="ptr-track" cx="20" cy="20" r="11"/><circle class="ptr-arc" cx="20" cy="20" r="11" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100" transform="rotate(-90 20 20)"/></svg></div>
@@ -170,11 +170,13 @@ function mountView(r: Route, rest: string[]): void {
   active = r;
   const el = $("#view");
   el.scrollTop = 0;
-  el.innerHTML = "";
+  // The page's one-line description sits above its content, not in the header.
+  el.innerHTML = r.view.subtitle ? `<p class="page-intro">${esc(r.view.subtitle)}</p>` : "";
+  const page = document.createElement("div");
+  el.append(page);
   document.title = `${r.title} · GP Sync`;
   $("#page-title").textContent = r.title;
-  $("#page-sub").textContent = r.view.subtitle ?? "";
-  r.view.mount(el, rest);
+  r.view.mount(page, rest);
   if (r.view.update) unsubscribe = onStatus(r.view.update.bind(r.view));
 }
 
@@ -428,6 +430,7 @@ function boot(): void {
     true,
   );
   window.addEventListener("hashchange", route);
+  watchSegs();
   $("#btn-more").addEventListener("click", () => {
     haptic();
     $("#sheet").classList.remove("hidden");
@@ -465,14 +468,7 @@ function boot(): void {
   installButtons();
   onInstallChange(installButtons);
   ripples();
-  const themeBtn = $("#btn-theme");
-  const themeIcon = () =>
-    (themeBtn.innerHTML = icon(document.documentElement.dataset.theme === "light" ? "sun" : "moon"));
-  themeIcon();
-  themeBtn.addEventListener("click", () => {
-    setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
-    themeIcon();
-  });
+  wireGlassToggles();
   const offline = $("#offline");
   new MutationObserver(() =>
     offline.classList.toggle("hidden", document.documentElement.dataset.offline !== "1"),

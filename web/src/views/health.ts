@@ -123,7 +123,7 @@ async function loadLogs(reset: boolean): Promise<void> {
 }
 
 const health: View = {
-  subtitle: "Accounts, storage, resource use and logs",
+  subtitle: "Accounts, storage and logs",
   mount(el) {
     el.innerHTML = `
     <div class="grid grid-cols-2 gap-4 xl:grid-cols-4" id="hl-tiles">

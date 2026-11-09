@@ -87,7 +87,7 @@ function row(i: SourceItem, r: SourcesReport): string {
       </div>
       <div class="mt-2 flex flex-wrap gap-1.5 empty:hidden">${googleState(i)}</div>
     </div>
-    <div class="flex w-full shrink-0 flex-wrap items-center justify-end gap-1.5 empty:hidden sm:w-auto">${
+    <div class="row-actions flex w-full shrink-0 flex-wrap items-center justify-end gap-1.5 empty:hidden sm:w-auto">${
       i.google_url
         ? `<a class="link-btn sm" href="${esc(i.google_url)}" target="_blank" rel="noopener noreferrer">${icon("external")}Open in Google Photos</a>`
         : ""
@@ -130,10 +130,10 @@ function firstRun(r: SourcesReport): string {
   return `<section class="card mb-4 border-accent p-4" role="region" aria-labelledby="so-ask-title">
     <div class="flex items-center gap-3"><span class="grid size-10 place-items-center rounded-xl bg-panel-2 text-ink-2">${icon("sparkles", "size-5")}</span>
       <h2 id="so-ask-title" class="text-lg font-semibold tracking-tight">Sort items saved from apps?</h2></div>
-    <p class="mt-3 text-sm text-ink-2">GP Sync found where your photos and videos came from. Items saved from apps (Snapchat above all) often have no date, so they pile up on the day they were copied here.</p>
+    <p class="mt-3 text-sm text-ink-2">App saves often have no date, so they pile up on the day they were copied here.</p>
     <ul class="mt-2 list-disc space-y-1 pl-5 text-sm text-ink-2">${lines || "<li>No items saved from apps found yet.</li>"}</ul>
-    <p class="mt-2 text-xs text-ink-3">Albums group them without hiding them. Captions make them searchable. Archive (off by default) takes them out of the timeline. Nothing changes in Google until you choose. You can change each source below at any time.</p>
-    <div class="mt-4 flex flex-wrap justify-end gap-2">
+    <p class="mt-2 text-xs text-ink-3">Albums group them, captions make them searchable, archive hides them from the timeline. Nothing changes in Google until you choose.</p>
+    <div class="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
       <button class="btn" data-ask="label">Only label them here</button>
       <button class="btn primary" data-ask="apply">${icon("ok")}Use these settings</button>
     </div>
@@ -169,7 +169,7 @@ function render(): void {
     ${isApp(r, r.source) ? settingsCard(r, r.source) : ""}
     <section class="card min-w-0 overflow-hidden">
       <div class="flex flex-wrap items-center gap-3 border-b border-line p-4">
-        <div class="min-w-0 flex-1"><h2 class="font-semibold">${esc(r.labels[r.source] ?? r.source)}</h2>
+        <div class="min-w-0 flex-1 basis-64"><h2 class="font-semibold">${esc(r.labels[r.source] ?? r.source)}</h2>
           <p class="mt-1 text-xs text-ink-3">${esc(SOURCE_HELP[r.source] ?? "")}</p></div>
         <span class="text-xs text-ink-3">${checking ? `Checking files… ${num(r.checked)} of ${num(r.total)} (${pct(r.checked, r.total)}%)` : `${num(r.total)} files checked`}${r.estimated ? ` · ${num(r.estimated)} Snapchat dates estimated` : ""}</span>
       </div>
@@ -351,7 +351,7 @@ function onChange(e: Event): void {
 }
 
 const sources: View = {
-  subtitle: "Where every photo and video came from: a camera, Snapchat, a screenshot, another app",
+  subtitle: "Where each photo and video came from",
   mount(el) {
     picked.clear();
     source = "";
@@ -359,11 +359,11 @@ const sources: View = {
     editing = false;
     el.innerHTML = `
     <details class="mb-4 px-1 text-sm text-ink-3">
-      <summary class="cursor-pointer font-medium text-ink-2">How GP Sync knows where a file came from</summary>
+      <summary class="cursor-pointer font-medium text-ink-2">How it works</summary>
       <div class="mt-2 space-y-2 leading-relaxed">
-        <p>Only evidence inside the file (or its name) is used, never a guess from its size. Snapchat writes a small record into each saved picture with its version, the phone and the iOS version. Screenshots, Instagram and TikTok leave markers too. Camera photos name their phone.</p>
-        <p>Most videos and some pictures saved from apps carry no app name at all. They are shown as “Saved from an app”.</p>
-        <p>Snapchat saves have no date. GP Sync estimates when each was saved from the iOS version it was saved on, placed in time by your own camera photos. It's shown with its margin, and changes items already in Google only when you accept it.</p>
+        <p>Only markers inside a file (or its name) are used, never a guess.</p>
+        <p>Most app videos carry no app name: they show as “Saved from an app”.</p>
+        <p>Snapchat saves are dated from the iOS version they were saved on, placed in time by your camera photos.</p>
       </div>
     </details>
     <div id="so-body"><div class="card skeleton h-72"></div></div>`;

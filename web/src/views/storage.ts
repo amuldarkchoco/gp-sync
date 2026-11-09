@@ -109,7 +109,7 @@ function row(i: StorageItem, r: StorageReport): string {
       ${cur ? `<div class="bar mt-2"><i style="width:${pct(cur.done, cur.total)}%"></i></div>` : ""}
       ${hint ? `<div class="mt-1 text-xs ${i.state === "failed" || i.state === "counts" ? "text-bad" : "text-ink-3"}">${esc(hint)}</div>` : ""}
     </div>
-    <div class="flex w-full shrink-0 flex-wrap items-center justify-end gap-1.5 empty:hidden sm:w-auto">${actions(i, r)}</div>
+    <div class="row-actions flex w-full shrink-0 flex-wrap items-center justify-end gap-1.5 empty:hidden sm:w-auto">${actions(i, r)}</div>
   </div>`;
 }
 
@@ -142,7 +142,7 @@ function render(): void {
       $("#st-body"),
       `<section class="card p-6 text-center"><div class="mx-auto max-w-lg space-y-2">${icon("cloud", "mx-auto size-8 text-ink-3")}
         <div class="text-base font-medium">See what uses your Google storage</div>
-        <p class="text-sm text-ink-3">GP Sync reads the list of your Google Photos library (nothing is changed) and shows which photos and videos count against your storage, biggest first. The first read can take a few minutes for a big library.</p>
+        <p class="text-sm text-ink-3">GP Sync reads your library list (nothing changes) and shows what counts against storage. The first read can take a few minutes.</p>
         ${r.error ? `<p class="text-sm text-bad">${esc(r.error)}</p>` : ""}</div></section>`,
     );
     return;
@@ -154,7 +154,7 @@ function render(): void {
     $("#st-body"),
     `${
       r.blocked
-        ? `<section class="card mb-4 flex flex-wrap items-start gap-3 border-bad/40 p-4">${icon("warn", "size-5 shrink-0 text-bad")}<div class="min-w-0 flex-1 text-sm"><div class="font-medium">Stopped: Google counted a re-upload against storage</div><div class="mt-0.5 text-ink-3">So the free upload doesn't work for this account right now, and nothing more is moved. Files already downloaded stay on this server. GP Sync never deleted anything in Google.</div></div><button class="btn sm" id="st-unblock">Try again anyway</button></section>`
+        ? `<section class="card mb-4 flex flex-wrap items-start gap-3 border-bad/40 p-4">${icon("warn", "size-5 shrink-0 text-bad")}<div class="min-w-0 flex-1 text-sm"><div class="font-medium">Stopped: Google counted a re-upload against storage</div><div class="mt-0.5 text-ink-3">Nothing more is moved. Downloaded files stay here, and nothing was deleted.</div></div><button class="btn sm" id="st-unblock">Try again anyway</button></section>`
         : ""
     }
     ${r.error ? `<section class="card mb-4 p-4 text-sm text-bad">${esc(r.error)}</section>` : ""}
@@ -173,11 +173,11 @@ function render(): void {
     <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[22rem_1fr]">
       <section class="card self-start">${cardHead("How it works", "info")}
         <ol class="card-b space-y-3 text-sm">
-          <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">1</span><span><b>GP Sync downloads it</b> to this server and checks it is exactly Google's original (same fingerprint). If not, it stops.</span></li>
-          <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">2</span><span><b>You delete it</b> in Google Photos with the link, then delete it from Google's Trash too. GP Sync never deletes anything in Google.</span></li>
-          <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">3</span><span><b>GP Sync notices</b> (within 2 minutes), uploads it again the free way, and checks with Google that it no longer counts. Then the copy here is removed.</span></li>
+          <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">1</span><span><b>Downloaded</b> here and checked against Google's original.</span></li>
+          <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">2</span><span><b>You delete it</b> in Google Photos and its Trash.</span></li>
+          <li class="flex gap-3"><span class="grid size-6 shrink-0 place-items-center rounded-full bg-panel-2 text-xs">3</span><span><b>Uploaded again</b> the free way, then the copy here is removed.</span></li>
         </ol>
-        <div class="border-t border-line px-4 py-3 text-xs text-ink-3">Comes back: the photo in original quality, its date, favourite, archive and caption. Doesn't come back: albums it was in, shared links and comments. If Google counts a re-upload, everything stops.</div>
+        <div class="border-t border-line px-4 py-3 text-xs text-ink-3">Keeps quality, date, favourite, archive and caption. Albums, shared links and comments are lost.</div>
       </section>
       <section class="card min-w-0 overflow-hidden">
         ${cardHead(
@@ -229,7 +229,7 @@ function onClick(e: Event): void {
 }
 
 const storage: View = {
-  subtitle: "Move photos that use your Google storage to free uploads",
+  subtitle: "Free up Google storage",
   mount(el) {
     account = status()?.accounts?.[0] ?? "";
     shown = 50;

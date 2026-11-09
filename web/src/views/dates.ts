@@ -70,11 +70,11 @@ function localInput(unix: number): string {
 
 const SOURCE: Record<DateItem["source"], string> = {
   manual: "the date you picked",
-  copy: "the earliest identical copy here",
-  file: "the file's time on this server",
-  google: "Google Photos (earlier than any copy here)",
-  filename: "the date in the file name",
-  estimated: "the estimated Snapchat save date (see Sources)",
+  copy: "the earliest copy here",
+  file: "the file's time here",
+  google: "Google Photos",
+  filename: "the file name",
+  estimated: "the Snapchat estimate",
 };
 
 function stateOf(i: DateItem, r: DatesReport): { label: string; tone: Tone; ic: Parameters<typeof icon>[0] } {
@@ -134,14 +134,14 @@ function row(i: DateItem, r: DatesReport): string {
   const canPick = waiting(i) || fixable(i);
   const googleLabel =
     i.google_source === "google"
-      ? "Google date · last checked"
+      ? "In Google"
       : i.google_source === "sent"
-        ? "Last sent · not verified"
-        : "Google date · not checked";
+        ? "Sent (unconfirmed)"
+        : "In Google (unchecked)";
   const previousLabel = i.previous_google_source === "sent" ? "Before fix · last sent" : "Before fix";
   const hint =
     i.fix === "waiting"
-      ? "Delete it in Google Photos, then empty it from Google's Trash. GP Sync then uploads it again with the right date (checks every 2 minutes)."
+      ? "Delete it in Google Photos and its Trash. GP Sync re-uploads it within 2 minutes."
       : i.fix === "in_google"
         ? "Google still has it. Open Google Photos › Library › Trash and delete it there too."
         : i.error;
@@ -158,10 +158,10 @@ function row(i: DateItem, r: DatesReport): string {
       </div>
       ${cur ? `<div class="bar mt-2"><i style="width:${pct(cur.done, cur.total)}%"></i></div>` : ""}
       ${hint ? `<div class="mt-1 text-xs ${i.fix === "failed" ? "text-bad" : "text-ink-3"}">${esc(hint)}</div>` : ""}
-      ${!i.google_url ? `<div class="mt-1 text-xs text-ink-3">Google Photos link unavailable; check dates with Google to look it up.</div>` : ""}
+      
       ${editing === i.name ? editor(i) : ""}
     </div>
-    <div class="flex w-full shrink-0 flex-wrap items-center justify-end gap-1.5 empty:hidden sm:w-auto">${actions(i, r)}</div>
+    <div class="row-actions flex w-full shrink-0 flex-wrap items-center justify-end gap-1.5 empty:hidden sm:w-auto">${actions(i, r)}</div>
   </div>`;
 }
 
@@ -214,9 +214,9 @@ function render(): void {
     $("#dt-body"),
     `<section class="card min-w-0 overflow-hidden">
         <div class="flex flex-wrap items-center gap-3 border-b border-line p-4">
-          <div class="min-w-0 flex-1"><h2 class="font-semibold">Files without a date</h2>
+          <div class="min-w-0 flex-1 basis-64"><h2 class="font-semibold">Files without a date</h2>
             <p class="mt-1 text-xs text-ink-3">${num(r.undated)} files · ${num(r.wrong)} with different dates · ${num(r.waiting)} waiting</p></div>
-          <span class="text-xs text-ink-3">Album: ${r.album ? esc(r.album) : "Off"} · <a class="underline" href="#/settings/albums">Settings</a> · <a class="underline" href="#/sources">Where they came from</a></span>
+          <span class="text-xs text-ink-3">Album: ${r.album ? esc(r.album) : "Off"} · <a class="underline" href="#/settings/albums">Settings</a> · <a class="underline" href="#/sources">Sources</a></span>
         </div>
         ${r.error ? `<p class="border-b border-line px-4 py-3 text-sm text-bad" role="alert">${esc(r.error)}</p>` : ""}
         <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
@@ -233,7 +233,7 @@ function render(): void {
         ${
           r.refreshed
             ? ""
-            : `<p class="border-b border-line px-4 py-2.5 text-xs text-ink-3">${icon("info", "inline size-3.5 -mt-0.5")} Check dates with Google to verify dates. A last-sent date is not confirmation of what Google shows.</p>`
+            : `<p class="border-b border-line px-4 py-2.5 text-xs text-ink-3">${icon("info", "inline size-3.5 -mt-0.5")} Check with Google to confirm these dates.</p>`
         }
         <div id="dt-list" aria-live="polite">${
           list.length
@@ -350,7 +350,7 @@ function onClick(e: Event): void {
 }
 
 const dates: View = {
-  subtitle: "Give photos and videos without a date the right one in Google Photos",
+  subtitle: "Fix items Google dated wrong",
   mount(el) {
     account = status()?.accounts?.[0] ?? "";
     picked.clear();
@@ -364,11 +364,11 @@ const dates: View = {
       <button class="btn" id="dt-refresh">${icon("refresh")}Check dates with Google</button>
     </section>
     <details class="mb-4 px-1 text-sm text-ink-3">
-      <summary class="cursor-pointer font-medium text-ink-2">How fixing dates works</summary>
+      <summary class="cursor-pointer font-medium text-ink-2">How it works</summary>
       <div class="mt-2 space-y-2 leading-relaxed">
-        <p>Review the suggested date or choose one. Press Fix, then delete the original in Google Photos and empty Google's Trash. GP Sync never deletes it for you.</p>
-        <p>GP Sync checks about every two minutes, or you can recheck now. Once Google no longer has the item, GP Sync uploads the local original again with the suggested date.</p>
-        <p>Original quality, favourite, archive, caption and GP Sync albums are restored. Google-created albums, shared links and comments are not restored.</p>
+        <p>Pick a date, press Fix, then delete the item in Google Photos and its Trash.</p>
+        <p>GP Sync then uploads it again with the right date (checks every 2 minutes).</p>
+        <p>Quality, favourite, archive, caption and GP Sync albums come back. Shared links and comments don't.</p>
       </div>
     </details>
     <div id="dt-body"><div class="card skeleton h-72"></div></div>`;

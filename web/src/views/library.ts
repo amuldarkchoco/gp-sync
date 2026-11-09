@@ -148,7 +148,7 @@ function show(): void {
 }
 
 const library: View = {
-  subtitle: "Every photo and video the app knows about",
+  subtitle: "Every photo and video here",
   mount(el, args) {
     tab = args[0] === "duplicates" ? "dups" : "files";
     if (args[0] === "folder") folder = args.slice(1).map(decodeURIComponent).join("/");

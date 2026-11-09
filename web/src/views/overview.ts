@@ -400,17 +400,14 @@ function renderSheet(): void {
 }
 
 const overview: View = {
-  subtitle: "Everything at a glance",
   mount(el) {
     el.innerHTML = `
     <!-- A quiet "Edit" link like iOS lists: there when wanted, no button weight on top of the page. -->
-    <div class="-mt-1 mb-2 flex items-center justify-between gap-2 sm:hidden">
-      <span class="label">Everything at a glance</span>
+    <div class="-mt-2 mb-1 flex justify-end">
       <button class="link-btn" data-ov-custom aria-label="Customize overview">${icon("sliders")}Edit</button>
     </div>
     <div class="grid grid-flow-row-dense grid-cols-1 gap-4 lg:grid-cols-12" id="ov-grid">
       <section class="card overview-hero relative overflow-hidden p-5 lg:col-span-5 xl:col-span-4" id="ov-hero" data-card="ov-hero">
-        <div class="pointer-events-none absolute -top-20 -right-20 size-64 rounded-full blur-3xl" style="background:radial-gradient(circle,var(--glow-1),transparent 70%)"></div>
         <div class="flex items-center justify-between gap-2"><div><span class="label">Your library</span><h2 class="mt-1 text-lg font-semibold tracking-tight">Backup progress</h2></div><span id="ov-rate" class="text-xs text-ink-3 tabular-nums"></span></div>
         <div class="mt-4 flex items-center gap-4 sm:gap-5">
           <div class="ring-box relative shrink-0">${ring(0, 148, 12)}<div class="absolute inset-0 grid place-items-center text-center"><div><div class="num text-3xl" id="ov-pct">–</div><div class="text-[11px] text-ink-3">of library</div></div></div></div>
@@ -465,11 +462,6 @@ const overview: View = {
       </section>
     </div>`;
     applyLayout();
-    // Wider screens show the page subtitle in the header: the Edit link sits right after it.
-    $("#page-sub").insertAdjacentHTML(
-      "beforeend",
-      ` <button class="link-btn sm" data-ov-custom aria-label="Customize overview">${icon("sliders")}Edit</button>`,
-    );
     $$("[data-ov-custom]").forEach((b) => b.addEventListener("click", openCustomize));
     $("#ov-now").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest<HTMLElement>("[data-now]");

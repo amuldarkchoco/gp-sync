@@ -175,7 +175,7 @@ function startCard(r: CopyReport): string {
       }
       <div class="rounded-xl bg-panel-2 p-3 text-sm"><b>${num(sel.count)}</b> item${sel.count === 1 ? "" : "s"} · ${bytes(sel.bytes)} from <b>${esc(r.src)}</b> to <b>${esc(r.dst)}</b>.</div>
       <button class="btn primary w-full justify-center" id="cp-start" ${sel.count ? "" : "disabled"}>${icon("copy")}Start copying</button>
-      <p class="text-xs text-ink-3">Original quality, date, favourite, archive and caption come over. Nothing is deleted in either account. Album copying is unavailable: the connected Google login cannot list album contents.</p>
+      <p class="text-xs text-ink-3">Copies keep quality, date, favourite, archive and caption. Nothing is deleted. Albums aren't copied.</p>
     </div></section>`;
 }
 
@@ -241,7 +241,7 @@ function render(): void {
       $("#cp-body"),
       `<section class="card p-6 text-center"><div class="mx-auto max-w-lg space-y-2">${icon("users", "mx-auto size-8 text-ink-3")}
         <div class="text-base font-medium">Connect a second Google account</div>
-        <p class="text-sm text-ink-3">Copying needs both accounts connected in GP Sync. Add the second one, then come back here.</p>
+        <p class="text-sm text-ink-3">Connect a second Google account to copy between them.</p>
         <a class="btn primary mt-2" href="#/settings/accounts">${icon("plus")}Add an account</a></div></section>`,
     );
     $("#cp-bar").classList.add("hidden"); // nothing to pick with one account
@@ -279,7 +279,7 @@ function render(): void {
   const todo = r.todo.photo.count + r.todo.video.count;
   html(
     $("#cp-body"),
-    `${r.jobs.counts && r.paused ? `<section class="card mb-4 flex items-start gap-3 border-bad/40 p-4">${icon("warn", "size-5 shrink-0 text-bad")}<div class="text-sm"><div class="font-medium">Paused: Google counted a copy against ${esc(r.dst)}'s storage</div><div class="mt-0.5 text-ink-3">So the free upload doesn't work for that account right now. Nothing was deleted. Resume only if you're fine with copies using its storage.</div></div></section>` : ""}
+    `${r.jobs.counts && r.paused ? `<section class="card mb-4 flex items-start gap-3 border-bad/40 p-4">${icon("warn", "size-5 shrink-0 text-bad")}<div class="text-sm"><div class="font-medium">Paused: Google counted a copy against ${esc(r.dst)}'s storage</div><div class="mt-0.5 text-ink-3">Copies would use that account's storage. Nothing was deleted.</div></div></section>` : ""}
     ${r.error ? `<section class="card mb-4 p-4 text-sm text-warn">${esc(r.error)} Copying goes on by itself when it's back.</section>` : ""}
     <div class="grid grid-cols-2 gap-4 xl:grid-cols-4">
       ${tile({ label: "In " + r.src.split("@")[0], value: num(r.src_total), ic: "library", sub: "Photos and videos it owns" })}
@@ -409,7 +409,7 @@ function onClick(e: Event): void {
 }
 
 const copyView: View = {
-  subtitle: "Copy selected photos and videos between Google accounts",
+  subtitle: "Copy items between Google accounts",
   mount(el) {
     kinds = new Set(["photo", "video"]);
     fromYear = "";

@@ -25,11 +25,11 @@ function show(name: string): void {
   box.innerHTML = `<div class="card w-full max-w-md p-5 shadow-2xl">
     <div class="flex items-center gap-3"><span class="grid size-10 place-items-center rounded-xl bg-panel-2 text-ink-2">${icon("calendar", "size-5")}</span>
       <h2 id="und-title" class="text-lg font-semibold tracking-tight">Photos without a date</h2></div>
-    <p class="mt-3 text-sm text-ink-2">Some photos and videos have no date saved inside them: Snapchat saves, screenshots, pictures from chats. Google Photos then dates them by the upload, so they can end up on the wrong day.</p>
-    <p class="mt-2 text-sm text-ink-3">GP Sync sends the best date it knows. It can also keep all of them in one album so they're easy to find and check.</p>
+    <p class="mt-3 text-sm text-ink-2">Snapchat saves, screenshots and chat pictures have no date inside, so Google dates them by the upload.</p>
+    <p class="mt-2 text-sm text-ink-3">Keep them together in one album?</p>
     <label class="mt-4 block"><span class="mb-1.5 block text-sm font-medium">Album name</span>
       <input class="input" id="und-name" maxlength="80" value="${esc(name)}"></label>
-    <div class="mt-5 flex flex-wrap justify-end gap-2">
+    <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
       <button class="btn" data-und="off">No album</button>
       <button class="btn primary" data-und="on">${icon("ok")}Use an album</button>
     </div>

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0
+
+- New look: warm paper and amber by day, ink-black and indigo by night, with clean solid cards in
+  place of frosted glass. The accent follows the theme, like the light of the new switch.
+- Light/dark switch in the header and in Settings: a glass knob lit along its edge, blue below at
+  night and amber above by day, whose pixel moon rebuilds into a sun. Tap or drag it.
+- The header shows only the page title; each page's one-line description sits above its content.
+- Shorter, plainer text across Fix dates, Sources, Free storage, Copy, Settings, About and Upload.
+- Phones: text that was cut off wraps to a second line, filters that didn't fit become a tidy grid
+  instead of hiding choices, item buttons line up in one row, and dialog buttons stack.
+
 ## 1.2.3
 
 - Sources: a new page shows where every photo and video came from (a camera, Snapchat, a screenshot,

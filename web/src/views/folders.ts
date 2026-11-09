@@ -102,7 +102,7 @@ function renderPrio(): void {
            <button class="btn icon sm" data-prio-remove="${esc(p)}" aria-label="Back to the usual order">${icon("x")}</button></li>`,
        )
        .join("")}</ol>
-     <p class="border-t border-line px-4 py-2.5 text-xs text-ink-3">Everything else follows in the usual order. A change applies to the files still waiting right away.</p>`,
+     <p class="border-t border-line px-4 py-2.5 text-xs text-ink-3">Others follow in the usual order.</p>`,
   );
 }
 
@@ -466,7 +466,7 @@ function renderChart(r: FolderReport): void {
   const recent = r.daily.slice(-7).reverse();
   html(
     $("#fo-daily"),
-    `<div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-sm font-medium">Daily arrivals</div><p class="text-xs text-ink-3">Based on filesystem timestamps, which can change when files are modified. Status is from the latest scan.</p></div>
+    `<div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-sm font-medium">Daily arrivals</div><p class="text-xs text-ink-3">From file times on this server.</p></div>
       <label class="text-xs text-ink-3">View a day <input class="input ml-1 w-auto" type="date" id="fo-day" value="${esc(fDay)}" min="${r.daily[0]?.day ?? ""}" max="${r.today}"></label></div>
      <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">${recent
        .map(
@@ -539,7 +539,7 @@ function open(): void {
 }
 
 const folders: View = {
-  subtitle: "Photos and videos per device and folder, and what's new",
+  subtitle: "Files per device and folder",
   mount(el, args) {
     parse(args);
     el.innerHTML = `

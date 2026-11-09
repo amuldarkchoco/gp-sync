@@ -188,7 +188,7 @@ function renderWeeks(h: History): void {
 }
 
 const insights: View = {
-  subtitle: "Upload times, file sizes and patterns",
+  subtitle: "Upload times and sizes",
   mount(el) {
     el.innerHTML = `
     <div class="mb-3 flex justify-end" id="in-note"></div>

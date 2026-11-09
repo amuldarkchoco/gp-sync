@@ -5,6 +5,7 @@ import { icon, type IconName } from "../lib/icons";
 import { capabilities, install, installHelp, installState, onInstallChange } from "../lib/install";
 import { host, refresh, status } from "../lib/store";
 import { setTheme, theme as currentTheme } from "../lib/theme";
+import { glassToggle, wireGlassToggles } from "../lib/glass-toggle";
 import { badge, cardHead, syncChips } from "../lib/ui";
 import type { View } from "./view";
 
@@ -147,7 +148,7 @@ function sectionSync(s: Status | null): string {
           ${field("From", `<select class="input" id="set-start">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === draft.start ? "selected" : ""}>${hour(h)}</option>`).join("")}</select>`)}
           ${field("Until", `<select class="input" id="set-end">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === draft.end ? "selected" : ""}>${hour(h)}</option>`).join("")}</select>`)}
         </div>
-        <p class="text-xs text-ink-3">Hours use this device's time zone. A file that is uploading when the window closes finishes first.</p>
+        <p class="text-xs text-ink-3">In this device's time zone. A file already uploading finishes first.</p>
       </div></section>
     <section class="card">${cardHead("Upload speed limit", "gauge")}
       <div class="card-b space-y-4">
@@ -342,6 +343,15 @@ function themeNote(t: string): string {
   return `Follows this device, now <b>${dark ? "dark" : "light"}</b>. Saved in this browser.`;
 }
 
+// The header switch also picks light or dark: show that choice here when the page is open.
+window.addEventListener("themechange", () => {
+  const box = document.getElementById("set-theme");
+  if (!box) return;
+  $$("button", box).forEach((x) => x.setAttribute("aria-checked", String(x.dataset.t === currentTheme())));
+  const note = document.getElementById("set-theme-note");
+  if (note) note.innerHTML = themeNote(currentTheme());
+});
+
 function sectionApp(): string {
   const theme = currentTheme();
   const opts: [string, string, IconName, string][] = [
@@ -360,6 +370,7 @@ function sectionApp(): string {
   return `<div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
     <section class="card xl:col-span-2">${cardHead("Theme", "palette")}
       <div class="card-b">
+        <div class="mb-5 flex items-center gap-4">${glassToggle("lg")}<span class="text-sm text-ink-3">Tap or drag</span></div>
         <div class="grid grid-cols-3 gap-3 sm:gap-4" id="set-theme" role="radiogroup" aria-label="Theme">${opts
           .map(
             ([k, l, ic, mock]) =>
@@ -370,7 +381,7 @@ function sectionApp(): string {
       </div></section>
     <section class="card xl:col-span-2">${cardHead("Install as an app", "download", installBadge())}
       <div class="card-b grid grid-cols-1 gap-4 text-sm text-ink-2 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:items-center">
-        <div class="flex items-start gap-3">${tileIcon("phone", "#0a84ff", "lg")}<div class="min-w-0"><div class="font-medium text-ink">GP Sync on your home screen</div><p class="text-xs text-ink-3">Opens full screen without the browser bars, and uploads photos straight from your phone.</p>${state === "ready" ? `<button class="btn primary mt-3" id="set-install">${icon("download")}Install now</button>` : ""}</div></div>
+        <div class="flex items-start gap-3">${tileIcon("phone", "#0a84ff", "lg")}<div class="min-w-0"><div class="font-medium text-ink">GP Sync on your home screen</div><p class="text-xs text-ink-3">Full screen, and upload straight from your phone.</p>${state === "ready" ? `<button class="btn primary mt-3" id="set-install">${icon("download")}Install now</button>` : ""}</div></div>
         <div class="install-help" id="set-install-help">${installHelp()}</div>
       </div></section>
     <section class="card xl:col-span-2">${cardHead("What works on this device", "devices", badge(`${ready} of ${caps.length}`, ready === caps.length ? "good" : "info"))}
@@ -382,7 +393,7 @@ function sectionApp(): string {
         .join("")}</ul></section>
     ${
       status()?.auth
-        ? `<section class="card xl:col-span-2">${cardHead("Sign-in", "lock")}<form class="card-b flex flex-wrap items-center justify-between gap-3" method="post" action="logout"><span class="text-sm text-ink-2">This dashboard asks for a password. Signing out here does not affect other devices.</span><button class="btn danger" type="submit">${icon("logout")}Sign out</button></form></section>`
+        ? `<section class="card xl:col-span-2">${cardHead("Sign-in", "lock")}<form class="card-b flex flex-wrap items-center justify-between gap-3" method="post" action="logout"><span class="text-sm text-ink-2">Signing out here doesn't affect other devices.</span><button class="btn danger" type="submit">${icon("logout")}Sign out</button></form></section>`
         : ""
     }
   </div>`;
@@ -614,6 +625,7 @@ function wire(): void {
 
   // app
   on("set-install", "click", () => void install());
+  wireGlassToggles();
   on("set-theme", "click", (e) => {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");
     if (!b) return;
@@ -638,7 +650,7 @@ function wire(): void {
 }
 
 const settings: View = {
-  subtitle: "How and when your library is backed up",
+  subtitle: "How and when backups run",
   mount(el, args) {
     section = sectionKey(args[0]);
     // The browser can offer installing a moment after the page opens: redraw the install card then.

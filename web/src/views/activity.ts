@@ -65,7 +65,7 @@ function render(): void {
 }
 
 const activity: View = {
-  subtitle: "Everything the app did, saved for 90 days",
+  subtitle: "The last 90 days",
   mount(el, args) {
     kind = FILTERS.some(([k]) => k === args[0]) ? (args[0] as string) : "all";
     query = "";
