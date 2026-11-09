@@ -135,7 +135,7 @@ function add(files: FileList | File[] | UploadEntry[]): void {
       started: 0,
       result: "",
       tries: 0,
-      preview: canShow || isVideo(f) ? URL.createObjectURL(f) : "",
+      preview: "",
       run: 0,
     });
   }
@@ -218,6 +218,10 @@ async function send(it: Item): Promise<void> {
         it.state = data.duplicate ? "duplicate" : "saved";
         it.result = data.duplicate ?? data.saved ?? "";
         it.sent = it.file.size;
+        if (it.preview) {
+          URL.revokeObjectURL(it.preview);
+          it.preview = "";
+        }
         break;
       }
       offset = Number(data.offset ?? end);
@@ -276,12 +280,22 @@ const STATE: Record<ItemState, [string, "good" | "info" | "bad" | "" | "warn"]> 
   failed: ["Failed", "bad"],
 };
 
+function getPreview(i: Item): string {
+  if (i.preview) return i.preview;
+  const canShow = i.file.type.startsWith("image/") && !/heic|heif/i.test(i.file.type);
+  if (canShow || isVideo(i.file)) {
+    i.preview = URL.createObjectURL(i.file);
+  }
+  return i.preview;
+}
+
 function previewMarkup(i: Item): string {
-  if (!i.preview)
+  const p = getPreview(i);
+  if (!p)
     return `<span class="thumb grid size-14 place-items-center text-ink-3">${icon(isVideo(i.file) ? "video" : "photo")}</span>`;
   return isVideo(i.file)
-    ? `<span class="relative size-14 shrink-0"><video class="thumb size-14" src="${i.preview}#t=0.1" muted playsinline preload="metadata"></video><span class="absolute right-1 bottom-1 grid size-4 place-items-center rounded bg-black/60 text-white">${icon("play", "size-2.5")}</span></span>`
-    : `<img class="thumb size-14" src="${i.preview}" alt="">`;
+    ? `<span class="relative size-14 shrink-0"><video class="thumb size-14" src="${p}#t=0.1" muted playsinline preload="metadata"></video><span class="absolute right-1 bottom-1 grid size-4 place-items-center rounded bg-black/60 text-white">${icon("play", "size-2.5")}</span></span>`
+    : `<img class="thumb size-14" src="${p}" alt="">`;
 }
 
 function isActive(i: Item): boolean {
@@ -312,10 +326,18 @@ function render(): void {
     return;
   }
   // Keep previews (video elements) in place: only rebuild rows whose content changed.
-  const order = items.slice().reverse();
+  // Render active items, recent finished items, and next waiting items (max ~40 rows) to keep DOM fast.
+  const finished = items.filter((i) => i.state === "saved" || i.state === "duplicate" || i.state === "failed");
+  const waiting = items.filter((i) => i.state === "waiting");
+  const recentFinished = finished.slice(-20);
+  const nextWaiting = waiting.slice(0, 15);
+  const visibleSet = new Set([...active, ...recentFinished, ...nextWaiting]);
+  const order = items.filter((i) => visibleSet.has(i)).reverse();
+
   const existing = new Map(
     [...list.querySelectorAll<HTMLElement>("[data-item]")].map((r) => [r.dataset.item, r]),
   );
+  list.querySelector("#up-more")?.remove();
   if (!list.querySelector("[data-item]")) list.innerHTML = "";
   let prev: Element | null = null;
   for (const i of order) {
@@ -351,6 +373,14 @@ function render(): void {
     existing.delete(i.id);
   }
   existing.forEach((r) => r.remove());
+  const pendingCount = waiting.length - nextWaiting.length;
+  if (pendingCount > 0) {
+    const more = document.createElement("div");
+    more.id = "up-more";
+    more.className = "p-3 text-center text-xs text-ink-3 font-medium border-t border-line";
+    more.textContent = `+ ${num(pendingCount)} more file(s) waiting in queue`;
+    list.appendChild(more);
+  }
 }
 
 function folderOptions(): string {
