@@ -2,3 +2,9 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+data/
+media/
+uploads/
+SETUP_AND_FIXES.md
+run.sh
+
