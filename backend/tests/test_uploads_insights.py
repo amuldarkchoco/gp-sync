@@ -163,6 +163,25 @@ def test_app_log_is_saved(server):
         assert [x["text"] for x in json.load(r)["items"]] == ["Something broke"]
 
 
+def test_library_warnings_are_one_line_each():
+    import io
+    import logging
+
+    sync.sq("DELETE FROM logs")
+    tee = sync.LogTee(io.StringIO(), "error")
+    handler = logging.StreamHandler(tee)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger = logging.getLogger("urllib3.test")
+    logger.addHandler(handler)
+    try:
+        logger.warning("Retrying (Retry(total=5)) after connection broken by " + "x" * 200)
+    finally:
+        logger.removeHandler(handler)
+    sync.flush_logs()
+    items = sync.app_logs("error")["items"]
+    assert len(items) == 1 and items[0]["level"] == "warning" and items[0]["text"].endswith("x" * 200)
+
+
 def test_about(server):
     with urllib.request.urlopen(server + "/api/about") as r:
         a = json.load(r)

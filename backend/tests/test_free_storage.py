@@ -287,3 +287,37 @@ def test_reupload_keeps_googles_date_even_if_the_file_time_is_lost(library, monk
     step(client)
     monkeypatch.setattr(sync.os, "utime", real_utime)
     assert client.uploads[0][3] == 1_700_000_000  # Google's date for it, not today
+
+
+@pytest.mark.parametrize("damage", ["deleted", "changed"])
+def test_nothing_is_deleted_when_the_copy_here_is_gone(library, damage):
+    google = {b64(DATA)}
+    client = FakeClient(library, google)
+    sync.reclaim_queue(ACC, ["BIG"])
+    step(client)
+    local = sync.Path(sync.q("SELECT local FROM reclaim WHERE media_key='BIG'")[0][0])
+    if damage == "deleted":
+        local.unlink()
+    else:
+        local.write_bytes(b"not the original any more")
+    step(client)
+    assert client.api.calls == []  # Google's copy is left alone
+    assert sync.q("SELECT state, local FROM reclaim WHERE media_key='BIG'")[0] == ("queued", "")
+    step(client)  # downloaded again, then replaced as usual
+    step(client)
+    assert client.api.calls[:2] == [("trash", [b64(DATA)]), ("delete", [b64(DATA)])]
+
+
+def test_a_broken_download_leaves_no_part_file(library, monkeypatch):
+    import requests
+
+    class Broken(FakeResponse):
+        def iter_content(self, n):
+            yield DATA[:100]
+            raise requests.ConnectionError("cut off")
+
+    monkeypatch.setattr("requests.get", lambda url, **kw: Broken(DATA))
+    sync.reclaim_queue(ACC, ["BIG"])
+    step(FakeClient(library, set()))
+    assert not list((sync.RECLAIM_DIR / ACC / "BIG").glob("*.part"))
+    sync.reclaim_state.clear()

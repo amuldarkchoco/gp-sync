@@ -28,25 +28,25 @@
   --color-bad: var(--bad);
 }
 
-/* Dark ("night"): ink-black with a blue cast, quiet bordered cards, indigo light (the moon of the
-   theme toggle). Status colors stay the familiar green / amber / red. */
+/* Dark ("night"): neutral graphite, so the toggle's blue moonlight is the only colour cast; quiet
+   bordered cards and a moon-blue accent. Status colors stay the familiar green / amber / red. */
 :root {
   color-scheme: dark;
-  --bg: #0d0d13;
-  --surface: #17171f;
-  --panel: #16161e;
-  --panel-2: rgb(180 182 255 / 0.065);
-  --line: rgb(205 206 255 / 0.09);
+  --bg: #0b0c0e;
+  --surface: #17181b;
+  --panel: #141518;
+  --panel-2: rgb(255 255 255 / 0.05);
+  --line: rgb(255 255 255 / 0.085);
   --edge: rgb(255 255 255 / 0.04);
-  --ink: #f3f3f8;
-  --ink-2: #c5c5d3;
-  --ink-3: #9293a8;
-  --accent: #9497ff;
-  --accent-2: #b7a8ff;
-  --accent-fill: #5f5fe6;
-  --accent-fill-2: #7676f2;
+  --ink: #f2f3f5;
+  --ink-2: #c4c6cc;
+  --ink-3: #8f929a;
+  --accent: #8ea2ff;
+  --accent-2: #a9b8ff;
+  --accent-fill: #4f6cf0;
+  --accent-fill-2: #6a84f6;
   --on-accent: #ffffff;
-  --s1: #7c7ef6;
+  --s1: #6f86ff;
   --s2: #e58a3a;
   --s3: #2fb383;
   --s4: #d3a032;
@@ -55,11 +55,11 @@
   --warn: #f5b04c;
   --bad: #ff6b63;
   --shadow: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 12px 32px -18px rgb(0 0 0 / 0.7);
-  --h1: #22224a;
-  --h2: #3a3a8c;
-  --h3: #6466e0;
-  --h4: #a9abff;
-  --dot: rgb(160 162 255 / 0.09);
+  --h1: #1a2140;
+  --h2: #2b3a85;
+  --h3: #4f6cf0;
+  --h4: #a3b3ff;
+  --dot: rgb(255 255 255 / 0.055);
 }
 
 /* Light ("day"): warm paper, white cards with a soft drop shadow, amber light (the sun). */
@@ -647,10 +647,10 @@ body::before {
     @apply block rounded-full;
   }
   .pv-dark {
-    --pb: #0d0d13;
-    --pc: #1b1b25;
+    --pb: #0b0c0e;
+    --pc: #1a1b1f;
     --pl: rgb(255 255 255 / 0.14);
-    --pa: #7c7ef6;
+    --pa: #6f86ff;
     --pg: #3ccf6e;
   }
   .pv-light {
@@ -956,6 +956,33 @@ body::before {
 ::view-transition-old(topbar),
 ::view-transition-new(topbar) {
   animation: none;
+}
+
+/* Theme switch (lib/glass-toggle.ts): the other theme spreads from the knob in a circle that
+   follows it. The script sizes the circle each frame and ends the transition when the knob settles. */
+html.theme-reveal #topbar,
+html.theme-reveal #tabbar {
+  view-transition-name: none;
+}
+html.theme-reveal .gt.revealing {
+  view-transition-name: gt-live;
+}
+html.theme-reveal::view-transition-old(root),
+html.theme-reveal::view-transition-group(gt-live),
+html.theme-reveal::view-transition-new(gt-live) {
+  animation: none;
+}
+html.theme-reveal::view-transition-new(root) {
+  animation: gt-hold 600s linear; /* keeps the transition open until the script ends it */
+  clip-path: circle(var(--reveal-r, 0px) at var(--reveal-x, 100%) var(--reveal-y, 0px));
+}
+html.theme-reveal::view-transition-old(gt-live) {
+  display: none;
+}
+@keyframes gt-hold {
+  to {
+    opacity: 1;
+  }
 }
 
 /* iPhone zooms into text boxes with text under 16px: keep them at 16px on phones. */

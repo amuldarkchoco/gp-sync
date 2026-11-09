@@ -15,6 +15,7 @@ import heapq
 import hmac
 import http.cookies
 import json
+import logging
 import os
 import re
 import shutil
@@ -752,9 +753,10 @@ class LogTee:
         self.buf += text
         while "\n" in self.buf:
             line, self.buf = self.buf.split("\n", 1)
-            line = LOG_STAMP.sub("", line, count=1)  # the time is stored separately
+            line = LOG_STAMP.sub("", line, count=1).rstrip()  # the time is stored separately
             if line.strip():
-                pending_logs.append((time.time(), self.level, line[:2000]))
+                level = "warning" if line.startswith("WARNING ") else self.level
+                pending_logs.append((time.time(), level, line[:2000]))
         return len(text)
 
     def flush(self):
@@ -791,9 +793,10 @@ def log_writer():
 
 def app_logs(level="all", query="", before=None, limit=200):
     where, args = [], []
-    if level in ("info", "error"):
-        where.append("level = ?")
-        args.append(level)
+    if level == "info":
+        where.append("level = 'info'")
+    elif level == "error":  # problems: errors and warnings
+        where.append("level IN ('error', 'warning')")
     if query:
         where.append("text LIKE ? ESCAPE '\\'")
         args.append(f"%{like(query)}%")
@@ -2613,14 +2616,18 @@ def _fetch(client, account, key, dedup, name, size, taken, folder, track):
     for url in urls:
         digest = hashlib.sha1()
         done = 0
-        with requests.get(url, headers=headers, stream=True, timeout=60) as r, open(tmp, "wb") as f:
-            r.raise_for_status()
-            for block in r.iter_content(1024 * 1024):
-                f.write(block)
-                digest.update(block)
-                done += len(block)
-                track["current"] = {**(track.get("current") or {}), "key": key, "step": "downloading", "done": done,
-                                    "total": size}  # fmt: skip
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=60) as r, open(tmp, "wb") as f:
+                r.raise_for_status()
+                for block in r.iter_content(1024 * 1024):
+                    f.write(block)
+                    digest.update(block)
+                    done += len(block)
+                    track["current"] = {**(track.get("current") or {}), "key": key, "step": "downloading",
+                                        "done": done, "total": size}  # fmt: skip
+        except BaseException:
+            tmp.unlink(missing_ok=True)  # a broken download would otherwise fill the disk
+            raise
         if _b64_hash(digest.digest()) == dedup:
             tmp.replace(target)
             if taken:
@@ -2684,8 +2691,17 @@ def reclaim_step(make_client=None, account=None):
                     continue
                 client = client_for(account)
                 did = True
-                if client.api.find_remote_media_by_hash(base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))):
-                    # The downloaded copy is Google's original (checked byte for byte): replace it.
+                in_google = client.api.find_remote_media_by_hash(
+                    base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))
+                )
+                if not _local_copy_ok(local, dedup):
+                    if in_google:  # the copy here is gone or damaged: download it again
+                        _set_reclaim(account, key, "queued", local="")
+                    else:
+                        _set_reclaim(account, key, "failed", "Google no longer has it and the copy here is gone")
+                    continue
+                if in_google:
+                    # The copy here is Google's original (checked byte for byte, again just now): replace it.
                     track["current"] = {"key": key, "step": "deleting", "done": 0, "total": size, "name": name}
                     if not _delete_in_google(client, dedup):
                         _set_reclaim(account, key, "in_google", "Google hasn't deleted it yet: trying again soon")
@@ -2765,6 +2781,14 @@ def _reupload(client, path, dedup, size, key, track, when=None):
     if "skipped" in phases:
         return None
     return next(iter(result.values()), "") or None
+
+
+def _local_copy_ok(local, dedup):
+    """The downloaded copy is still here and still exactly Google's original."""
+    try:
+        return bool(local) and Path(local).is_file() and _b64_hash(media.sha1_file(local)) == dedup
+    except OSError:
+        return False
 
 
 def _delete_in_google(client, dedup):
@@ -4915,6 +4939,9 @@ def main():
     os.chdir(DATA)  # gpmc writes failed_skipped_files.log to the working folder
     sys.stdout = LogTee(sys.stdout, "info")
     sys.stderr = LogTee(sys.stderr, "error")
+    # One plain line per message from gpmc and the libraries it uses. Set up first, so gpmc keeps it:
+    # its own handler wraps every message into many narrow lines when there is no terminal.
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
     threading.Thread(target=log_writer, daemon=True).start()
     migrate_accounts()
     migrate_stats()

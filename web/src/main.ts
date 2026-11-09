@@ -1,5 +1,5 @@
 import "./style.css";
-import { post, type Status } from "./lib/api";
+import { get, post, type Status } from "./lib/api";
 import { enableTips } from "./lib/charts";
 import { $, $$, esc, html, toast } from "./lib/dom";
 import { pct } from "./lib/format";
@@ -368,6 +368,18 @@ function installButtons(): void {
   $("#side-install").classList.toggle("hidden", installState() === "installed");
 }
 
+/** The server works out local days, schedule hours and dates in file names in this time zone:
+ * keep it current (it used to be saved only with the Schedule or Alerts settings). */
+async function saveTimeZone(): Promise<void> {
+  const tz = -new Date().getTimezoneOffset();
+  try {
+    const s = await get<{ tz_offset_min: number }>("settings");
+    if (s.tz_offset_min !== tz) await post("settings", { tz_offset_min: tz });
+  } catch {
+    // signed out or offline: tried again next time the dashboard opens
+  }
+}
+
 function boot(): void {
   const root = $("#app");
   root.innerHTML = shell();
@@ -478,6 +490,7 @@ function boot(): void {
   onMode((live) => $("#live").classList.toggle("hidden", !live));
   route();
   startPolling();
+  void saveTimeZone();
   if ("serviceWorker" in navigator && isSecureContext) {
     navigator.serviceWorker.register("sw.js").catch(() => undefined);
   }

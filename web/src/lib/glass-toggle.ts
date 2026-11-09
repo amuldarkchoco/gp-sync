@@ -114,6 +114,81 @@ export function glassToggle(size: "sm" | "lg" = "sm"): string {
   </button>`;
 }
 
+/** Radius that reveals `share` (0..1) of the page from (x, y): at 1 it reaches the farthest corner. */
+export function revealRadius(share: number, x: number, y: number, w: number, h: number): number {
+  const s = Math.min(1, Math.max(0, share));
+  return s * Math.hypot(Math.max(x, w - x), Math.max(y, h - y));
+}
+
+type VT = { ready: Promise<void>; skipTransition: () => void };
+
+/** A theme switch in progress: the other theme spreads from the knob in a circle that follows the
+ * knob, so a tap moves at the knob's speed and a drag follows the finger (drag back, it shrinks).
+ * `target` is where the knob is heading (null while dragging); it settles when it gets there. */
+interface Reveal {
+  el: HTMLElement;
+  from: 0 | 1;
+  target: 0 | 1 | null;
+}
+let reveal: Reveal | null = null;
+
+function canReveal(): boolean {
+  return "startViewTransition" in document && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function knobP(el: HTMLElement): number {
+  return Number(getComputedStyle(el).getPropertyValue("--p")) || 0;
+}
+
+function placeReveal(el: HTMLElement, share: number): void {
+  const k = el.querySelector(".gt-knob")!.getBoundingClientRect();
+  const x = k.left + k.width / 2;
+  const y = k.top + k.height / 2;
+  const root = document.documentElement.style;
+  root.setProperty("--reveal-x", `${x}px`);
+  root.setProperty("--reveal-y", `${y}px`);
+  root.setProperty("--reveal-r", `${revealRadius(share, x, y, innerWidth, innerHeight)}px`);
+}
+
+/** Start switching theme from toggle `el`. False when the browser can't show it (then switch at once). */
+function startReveal(el: HTMLElement, target: 0 | 1 | null): boolean {
+  if (reveal || !canReveal()) return false;
+  const from: 0 | 1 = resolvedTheme() === "light" ? 1 : 0;
+  const r: Reveal = { el, from, target };
+  reveal = r;
+  const html = document.documentElement;
+  placeReveal(el, 0);
+  html.classList.add("theme-reveal");
+  el.classList.add("revealing");
+  // The knob sets off at once (it is drawn live above the page); the circle catches up with it.
+  if (target !== null) el.style.setProperty("--p", String(target));
+  const vt = (document as Document & { startViewTransition: (cb: () => void) => VT }).startViewTransition(
+    () => {
+      // The other theme is drawn inside the circle; it is saved only when the knob settles there.
+      html.dataset.theme = from ? "dark" : "light";
+    },
+  );
+  const settle = (end: 0 | 1) => {
+    if (reveal !== r) return;
+    reveal = null;
+    vt.skipTransition();
+    html.classList.remove("theme-reveal");
+    el.classList.remove("revealing");
+    setTheme(end ? "light" : "dark"); // back to the old theme if the knob went back
+  };
+  const tick = () => {
+    if (reveal !== r) return;
+    // The page redrew the toggle away mid-switch: finish where it was heading.
+    if (!el.isConnected) return settle(r.target ?? (Number(el.style.getPropertyValue("--p")) >= 0.5 ? 1 : 0));
+    const p = knobP(el);
+    placeReveal(el, Math.abs(p - from));
+    if (r.target !== null && Math.abs(p - r.target) < 0.002) settle(r.target);
+    else requestAnimationFrame(tick);
+  };
+  vt.ready.then(() => requestAnimationFrame(tick)).catch(() => settle(r.target ?? (from ? 0 : 1)));
+  return true;
+}
+
 /** Wire every toggle inside `root` (click, keyboard, drag) and keep them in step with the theme. */
 export function wireGlassToggles(root: ParentNode = document): void {
   for (const el of root.querySelectorAll<HTMLButtonElement>(".gt:not([data-wired])")) {
@@ -125,6 +200,7 @@ export function wireGlassToggles(root: ParentNode = document): void {
       return Math.max(1, el.clientWidth - knob.offsetWidth - 2 * knob.offsetLeft);
     };
     el.addEventListener("pointerdown", (e) => {
+      if (reveal) return;
       start = { x: e.clientX, p: Number(el.style.getPropertyValue("--p")) || 0 };
       moved = 0;
       el.setPointerCapture(e.pointerId);
@@ -133,17 +209,26 @@ export function wireGlassToggles(root: ParentNode = document): void {
       if (!start) return;
       moved = Math.max(moved, Math.abs(e.clientX - start.x));
       if (moved < 4) return;
-      el.classList.add("dragging");
+      if (!el.classList.contains("dragging")) {
+        el.classList.add("dragging");
+        startReveal(el, null);
+      }
       const p = Math.min(1, Math.max(0, start.p + (e.clientX - start.x) / travel()));
       el.style.setProperty("--p", String(p));
+      // Without the reveal, the theme flips as the knob passes the middle.
+      if (reveal?.el !== el && p >= 0.5 !== (resolvedTheme() === "light")) choose(p >= 0.5);
     });
     const end = () => {
       if (!start) return;
       const dragged = moved >= 4;
-      const p = Number(el.style.getPropertyValue("--p"));
+      const target: 0 | 1 = Number(el.style.getPropertyValue("--p")) >= 0.5 ? 1 : 0;
       start = null;
       el.classList.remove("dragging");
-      if (dragged) choose(p >= 0.5);
+      if (!dragged) return;
+      if (reveal?.el === el) {
+        reveal.target = target;
+        el.style.setProperty("--p", String(target)); // glides the rest of the way; the circle follows
+      } else choose(target === 1);
     };
     el.addEventListener("pointerup", end);
     el.addEventListener("pointercancel", end);
@@ -154,27 +239,25 @@ export function wireGlassToggles(root: ParentNode = document): void {
         moved = 0;
         return;
       }
-      choose(el.getAttribute("aria-checked") !== "true");
+      if (reveal) return;
+      const day = el.getAttribute("aria-checked") !== "true";
+      if (!startReveal(el, day ? 1 : 0)) choose(day);
     });
   }
 }
 
-/** Switch theme; the page cross-fades where the browser can. */
+/** Switch theme at once. */
 function choose(day: boolean): void {
-  const apply = () => setTheme(day ? "light" : "dark");
   if (resolvedTheme() === (day ? "light" : "dark")) return syncToggles();
-  const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
-  if (doc.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches)
-    doc.startViewTransition(apply);
-  else apply();
+  setTheme(day ? "light" : "dark");
 }
 
-/** Put every toggle on the page in the current theme's position. */
+/** Put every toggle on the page in the current theme's position (not one being dragged). */
 export function syncToggles(): void {
   const day = resolvedTheme() === "light";
   for (const el of document.querySelectorAll<HTMLElement>(".gt")) {
     el.setAttribute("aria-checked", String(day));
-    el.style.setProperty("--p", day ? "1" : "0");
+    if (!el.classList.contains("dragging")) el.style.setProperty("--p", day ? "1" : "0");
   }
 }
 

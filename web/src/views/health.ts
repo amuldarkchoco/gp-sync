@@ -115,7 +115,7 @@ async function loadLogs(reset: boolean): Promise<void> {
     ? logs
         .map(
           (l) =>
-            `<div class="flex gap-3 border-b border-line px-4 py-1.5 last:border-0 ${l.level === "error" ? "bg-bad/5" : ""}"><span class="shrink-0 text-ink-3 tabular-nums">${date(l.time)} ${clock(l.time)}</span><span class="${l.level === "error" ? "text-bad" : "text-ink-2"} break-all whitespace-pre-wrap">${esc(l.text)}</span></div>`,
+            `<div class="flex gap-3 border-b border-line px-4 py-1.5 last:border-0 ${l.level === "error" ? "bg-bad/5" : ""}"><span class="shrink-0 text-ink-3 tabular-nums">${date(l.time)} ${clock(l.time)}</span><span class="${l.level === "error" ? "text-bad" : l.level === "warning" ? "text-warn" : "text-ink-2"} break-all whitespace-pre-wrap">${esc(l.text)}</span></div>`,
         )
         .join("")
     : `<div class="empty">${icon("logs")}No log lines</div>`;

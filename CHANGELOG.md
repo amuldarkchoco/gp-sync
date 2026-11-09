@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.1
+
+- The light/dark switch changes the page at the knob's own speed: the new theme spreads from the
+  knob as it slides, follows your finger when you drag, and shrinks back if you drag back.
+- Dark mode is neutral graphite instead of violet, with a moon-blue accent that matches the switch.
+- Your time zone is saved whenever the dashboard opens. It was only saved with the Schedule or
+  Alerts settings, so dates from file names, schedule hours and daily stats could be off by hours.
+- Free storage checks the downloaded copy again, byte for byte, right before deleting Google's copy,
+  and downloads it again if it is gone or damaged. Broken downloads no longer leave files behind.
+- Warnings from the Google Photos library are one line each in the log (and count as problems),
+  instead of a dozen wrapped fragments.
+
 ## 1.4.0
 
 - Fix dates is automatic: GP Sync checks the file is unchanged, deletes Google's copy (Trash, then

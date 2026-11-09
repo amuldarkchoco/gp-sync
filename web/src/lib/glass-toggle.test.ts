@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { moonPixels, pairPixels, sunPixels } from "./glass-toggle";
+import { moonPixels, pairPixels, revealRadius, sunPixels } from "./glass-toggle";
 
 const key = (p: { x: number; y: number }) => `${p.x},${p.y}`;
 
@@ -23,5 +23,16 @@ describe("glass toggle pixel morph", () => {
       expect(p.delay).toBeGreaterThanOrEqual(0);
       expect(p.delay).toBeLessThanOrEqual(0.3);
     }
+  });
+});
+
+describe("theme reveal", () => {
+  it("grows with the knob and reaches the farthest corner at the end", () => {
+    // Knob near the top right of a 1000x800 page: the farthest corner is bottom left.
+    const full = Math.hypot(900, 760);
+    expect(revealRadius(0, 900, 40, 1000, 800)).toBe(0);
+    expect(revealRadius(0.5, 900, 40, 1000, 800)).toBeCloseTo(full / 2);
+    expect(revealRadius(1, 900, 40, 1000, 800)).toBeCloseTo(full);
+    expect(revealRadius(1.4, 900, 40, 1000, 800)).toBeCloseTo(full);
   });
 });
