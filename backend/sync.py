@@ -2608,7 +2608,7 @@ def storage_report(account, limit=500):
         # item is counted once here too (the canonical copy, which has no album, comes first).
         """SELECT media_key, dedup_key, file_name, type, size_bytes, quota_charged_bytes, utc_timestamp
            FROM remote_media WHERE origin = 'self' AND COALESCE(trash_timestamp, 0) = 0
-           AND COALESCE(is_locked, 0) = 0 ORDER BY is_canonical DESC, content_version""",
+           AND COALESCE(is_locked, 0) = 0 ORDER BY is_canonical DESC, content_version DESC""",
     )
     jobs = {
         r[0]: r
@@ -2679,7 +2679,8 @@ def storage_report(account, limit=500):
 # Items Free storage may move: the account's own, counting against storage, not in the Trash or
 # the Locked folder.
 _MOVABLE = """quota_charged_bytes > 0 AND origin = 'self' AND COALESCE(trash_timestamp, 0) = 0
-              AND COALESCE(is_locked, 0) = 0"""
+              AND COALESCE(is_locked, 0) = 0
+              AND dedup_key NOT IN (SELECT dedup_key FROM remote_media WHERE quota_charged_bytes = 0)"""
 RECLAIM_TYPES = {"photo": 1, "video": 2}
 
 
@@ -2806,6 +2807,14 @@ def update_library(client, account):
     with _library_lock(account):
         client.update_cache(show_progress=False)
         meta_set(f"library_refreshed:{account}", str(time.time()))
+        db_path = _library_db(account)
+        if db_path.exists():
+            with contextlib.suppress(Exception), sqlite3.connect(db_path, timeout=10) as conn:
+                conn.execute(
+                    """DELETE FROM remote_media 
+                       WHERE quota_charged_bytes > 0 
+                         AND dedup_key IN (SELECT dedup_key FROM remote_media WHERE quota_charged_bytes = 0)"""
+                )
 
 
 _disk_lock = threading.Lock()
@@ -2844,9 +2853,16 @@ def _fetch(client, account, key, dedup, name, size, taken, folder, track):
     target = folder / (clean_name(name) or f"{key}.bin")
     tmp = target.with_suffix(target.suffix + ".part")
     headers = {"Authorization": f"Bearer {client.api.bearer_token}", "User-Agent": client.api.user_agent}
-    urls = _download_urls(client.api.get_download_urls(key))
+    resp = client.api.get_download_urls(key)
+    urls = _download_urls(resp)
     if not urls:
         raise RuntimeError("Google gave no download link")
+    valid_hashes = {dedup}
+    if isinstance(resp, dict):
+        with contextlib.suppress(Exception):
+            for h in resp.get("1", {}).get("2", {}).get("13", {}).values():
+                if isinstance(h, (bytes, bytearray)):
+                    valid_hashes.add(_b64_hash(h))
     for url in urls:
         digest = hashlib.sha1()
         done = 0
@@ -2862,7 +2878,8 @@ def _fetch(client, account, key, dedup, name, size, taken, folder, track):
         except BaseException:
             tmp.unlink(missing_ok=True)  # a broken download would otherwise fill the disk
             raise
-        if _b64_hash(digest.digest()) == dedup:
+        download_hash = _b64_hash(digest.digest())
+        if download_hash in valid_hashes:
             tmp.replace(target)
             if taken:
                 os.utime(target, (taken, taken))  # the upload uses the file time as its date
@@ -2923,7 +2940,8 @@ def _process_reclaim_item(account, key, dedup, name, size, taken, st_, local, fa
             try:
                 path = _download(client, account, key, dedup, name, size, taken, track=worker_track)
                 local = str(path)
-                _set_reclaim(account, key, "downloaded", local=local)
+                file_hash = _b64_hash(media.sha1_file(local))
+                _set_reclaim(account, key, "downloaded", local=local, dedup_key=file_hash)
                 track["error"] = ""
                 log(f"Downloaded {name} from Google ({fmt_bytes(size)}) to free its storage", "downloaded")
                 return True
@@ -2947,8 +2965,13 @@ def _process_reclaim_item(account, key, dedup, name, size, taken, st_, local, fa
                 )
                 return False
 
-            in_google = client.api.find_remote_media_by_hash(
-                base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))
+            orig_row = _library_rows(account, "SELECT dedup_key FROM remote_media WHERE media_key=?", (key,))
+            orig_dedup = orig_row[0][0] if orig_row else dedup
+            all_dedups = {dedup, orig_dedup}
+
+            in_google = any(
+                client.api.find_remote_media_by_hash(base64.urlsafe_b64decode(d + "=" * (-len(d) % 4)))
+                for d in all_dedups
             )
             if not _local_copy_ok(local, dedup):
                 if in_google:
@@ -2959,7 +2982,7 @@ def _process_reclaim_item(account, key, dedup, name, size, taken, st_, local, fa
 
             if in_google:
                 _update_worker_progress(account, key, {"key": key, "step": "deleting", "done": 0, "total": size, "name": name})
-                if not _delete_in_google(client, dedup):
+                if not _delete_in_google(client, *all_dedups):
                     _set_reclaim(account, key, "in_google", "Google hasn't deleted it yet: trying again soon")
                     return True
                 log(f"Deleted {name} in Google Photos ({account}) to upload it again for free", "deleted")
@@ -3132,20 +3155,29 @@ def _local_copy_ok(local, dedup):
         return False
 
 
-def _delete_in_google(client, dedup):
+def _delete_in_google(client, *dedup_keys):
     """Delete one item in Google Photos for good: into Google's Trash, then out of it (an item in the
     Trash would block the new upload). Only called once the original is safe here, checked byte for
     byte. Returns True once Google no longer has it."""
-    digest = base64.urlsafe_b64decode(dedup + "=" * (-len(dedup) % 4))
-    try:
-        client.api.move_remote_media_to_trash([dedup])
-    except Exception as e:  # already in the Trash (deleted by hand): deleting it from there still works
-        if outage_kind(e):
-            raise
-    client.api.delete_remote_media_permanently([dedup])
+    keys = [d for d in set(dedup_keys) if d]
+    for d in keys:
+        try:
+            client.api.move_remote_media_to_trash([d])
+        except Exception as e:  # already in the Trash (deleted by hand): deleting it from there still works
+            if outage_kind(e):
+                raise
+        try:
+            client.api.delete_remote_media_permanently([d])
+        except Exception as e:
+            if outage_kind(e):
+                raise
     for wait in (0, 1, 2, 4):  # Google can take a moment to forget it
         time.sleep(wait)
-        if not client.api.find_remote_media_by_hash(digest):
+        still_there = any(
+            client.api.find_remote_media_by_hash(base64.urlsafe_b64decode(d + "=" * (-len(d) % 4)))
+            for d in keys
+        )
+        if not still_there:
             return True
     return False
 

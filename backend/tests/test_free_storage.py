@@ -201,6 +201,34 @@ def test_refuses_a_download_that_is_not_the_original(library):
     assert not list((sync.RECLAIM_DIR / ACC / "SMALL").glob("*.jpg"))
 
 
+def test_downloads_collage_with_secondary_hash(library, monkeypatch):
+    collage_bytes = b"rendered collage image bytes"
+    h_creation = hashlib.sha1(b"creation meta").digest()
+    h_rendered = hashlib.sha1(collage_bytes).digest()
+
+    client = FakeClient(library, {b64(b"creation meta")})
+    client.api.get_download_urls = lambda key: {
+        "1": {
+            "2": {
+                "13": {"1": h_creation, "2": h_rendered},
+                "4": "collage.jpg",
+            },
+            "5": {"2": {"6": "https://video-downloads.googleusercontent.com/COLLAGE"}},
+        }
+    }
+    monkeypatch.setattr("requests.get", lambda url, **kw: FakeResponse(collage_bytes))
+
+    with Storage(library) as st:
+        st.update([item("COLLAGE", data=b"creation meta")])
+
+    sync.reclaim_queue(ACC, ["COLLAGE"])
+    step(client)
+    state, error, local = sync.q("SELECT state, error, local FROM reclaim WHERE media_key='COLLAGE'")[0]
+    assert state == "downloaded" and not error and local
+    assert sync.Path(local).exists()
+    assert sync._b64_hash(sync.media.sha1_file(local)) == sync._b64_hash(h_rendered)
+
+
 def test_stops_when_google_counts_the_new_upload(library):
     client = FakeClient(library, set(), new_quota=123)
     sync.reclaim_queue(ACC, ["BIG"])
