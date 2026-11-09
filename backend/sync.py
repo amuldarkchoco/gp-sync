@@ -1272,7 +1272,7 @@ def scan(st=None):
         for t, a in fmap.items()
     }
     for top, account in fmap.items():
-        for root, dirs, names in os.walk(MEDIA / top):
+        for root, dirs, names in os.walk(MEDIA / top, followlinks=True):
             dirs[:] = sorted(d for d in dirs if not skipped(d))
             for name in sorted(names):
                 if ext(name) not in EXTS or skipped(name):
@@ -2140,11 +2140,13 @@ def duplicates(limit=200):
 def safe_media_path(name):
     """Resolve a dashboard file name to a real path inside the media folder, or None."""
     try:
-        p = (MEDIA / name).resolve()
-        root = MEDIA.resolve()
+        raw = Path(os.path.normpath(MEDIA / name))
+        if not raw.is_relative_to(MEDIA):
+            return None
+        p = raw.resolve()
     except (OSError, ValueError):
         return None
-    if root not in p.parents or not p.is_file() or ext(p.name) not in EXTS:
+    if not p.is_file() or ext(p.name) not in EXTS:
         return None
     return p
 
