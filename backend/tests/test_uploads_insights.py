@@ -242,3 +242,26 @@ def test_old_activity_is_relabelled():
         "uploaded",
         "deleted",
     ]
+
+
+def test_diagnostics_have_no_logins(server, media):
+    sync.save_account("androidId=1&app=com.google.android.apps.photos&Email=d%40example.com&Token=SECRET-TOKEN")
+    sync.log("Something to look at", "error")
+    with urllib.request.urlopen(server + "/api/diagnostics?hours=2") as r:
+        assert "attachment" in r.headers["Content-Disposition"]
+        text = r.read().decode()
+    d = json.loads(text)
+    assert d["kind"] == "gp-sync diagnostics" and d["version"] == sync.VERSION
+    assert any("Something to look at" in x["text"] for x in d["activity"])
+    assert "SECRET-TOKEN" not in text and "androidId" not in text
+
+
+def test_cli_talks_to_the_app(server, capsys):
+    import cli
+
+    cli.main(["--url", server, "status"])
+    assert "GP Sync" in capsys.readouterr().out
+    cli.main(["--url", server, "diagnostics", "--hours", "1"])
+    assert json.loads(capsys.readouterr().out)["kind"] == "gp-sync diagnostics"
+    with pytest.raises(SystemExit):
+        cli.main(["--url", server, "free", "nobody@example.com"])  # needs --yes

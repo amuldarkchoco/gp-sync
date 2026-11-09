@@ -363,3 +363,56 @@ def test_sources_api(src, server):
     assert code == 200 and json.loads(out)["settings"]["asked"] is True
     code, out = post(f"{server}/api/sources/accept-dates", json.dumps({"paths": ["Photos/snap.jpg"]}).encode())
     assert code == 200 and json.loads(out) == {"accepted": 0, "queued": 0}  # labelled TikTok now
+
+
+class PickyApi:
+    """Like Google: a batch with one item it doesn't know fails as a whole (404)."""
+
+    def __init__(self, known):
+        self.known, self.albums = set(known), {}
+
+    def _check(self, keys):
+        if not set(keys) <= self.known:
+            raise RuntimeError("404 Client Error: Not Found")
+
+    def create_album(self, album_name, media_keys):
+        self._check(media_keys)
+        self.albums["ALB"] = (album_name, list(media_keys))
+        return "ALB"
+
+    def add_media_to_album(self, album_media_key, media_keys):
+        self._check(media_keys)
+        self.albums[album_media_key][1].extend(media_keys)
+
+
+def test_one_missing_item_doesnt_block_the_album(src):
+    class Client:
+        api = PickyApi({"K0", "K1", "K2", "K4", "NEW3"})
+
+    sync.q("DELETE FROM albums")
+    sync._album_refused.clear()
+    sync.meta_set(f"library_refreshed:{ACC}", "0")  # no library list read yet
+    items = [(f"/media/p{i}.jpg", f"K{i}") for i in range(5)]
+    added, left_out, ok = sync.album_add(Client(), ACC, "Snapchat", items)
+    assert ok and sorted(added) == ["/media/p0.jpg", "/media/p1.jpg", "/media/p2.jpg", "/media/p4.jpg"]
+    assert left_out == ["/media/p3.jpg"]
+    assert sorted(Client.api.albums["ALB"][1]) == ["K0", "K1", "K2", "K4"]
+    # Refused items wait instead of failing every round.
+    assert sync.album_add(Client(), ACC, "Snapchat", [("/media/p3.jpg", "K3")]) == ([], [], True)
+
+    # With the library read, a replaced item is found under its current key.
+    sync._album_refused.clear()
+    data = b"replaced photo"
+    sha = hashlib.sha1(data).hexdigest()
+    sync.q("INSERT OR REPLACE INTO files (path, status, account, sha1, media_key, updated) VALUES (?,?,?,?,?,?)",
+           ("/media/p3.jpg", "uploaded", ACC, sha, "K3", 1))  # fmt: skip
+    db = sync._library_db(ACC)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    item = library_item(sha, 1_790_000_000)
+    item.media_key = "NEW3"
+    with Storage(db) as st:
+        st.update([item])
+    sync.meta_set(f"library_refreshed:{ACC}", "100")
+    added, left_out, ok = sync.album_add(Client(), ACC, "Snapchat", [("/media/p3.jpg", "K3")])
+    assert added == ["/media/p3.jpg"] and "NEW3" in Client.api.albums["ALB"][1]
+    assert sync.q("SELECT media_key FROM files WHERE path='/media/p3.jpg'") == [("NEW3",)]

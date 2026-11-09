@@ -33,7 +33,10 @@ WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock backend/.python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY backend/sync.py backend/media.py backend/notify.py backend/cache.py backend/provenance.py VERSION ./
+# `gpsync` command: docker exec <container> gpsync diagnostics > diagnostics.json
+RUN printf '#!/bin/sh\nexec /opt/venv/bin/python /app/cli.py "$@"\n' > /usr/local/bin/gpsync && chmod +x /usr/local/bin/gpsync
+
+COPY backend/sync.py backend/media.py backend/notify.py backend/cache.py backend/provenance.py backend/cli.py VERSION ./
 COPY --from=web /web/dist ./static
 
 # Last, because they change on every build: everything above stays cached and unchanged.

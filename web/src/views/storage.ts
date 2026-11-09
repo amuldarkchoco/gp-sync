@@ -4,6 +4,7 @@ import { ago, bytes, date, num, pct } from "../lib/format";
 import { icon } from "../lib/icons";
 import { status } from "../lib/store";
 import { accountMenu, wireAccountMenu } from "../lib/account-menu";
+import { confirmDialog } from "../lib/dialog";
 import { badge, cardHead, tile, type Tone } from "../lib/ui";
 import type { View } from "./view";
 
@@ -225,17 +226,28 @@ function render(): void {
   );
 }
 
+const KEEP_HINT = "Off: the copies stay on this server, under Downloads, until you delete them.";
+
 /** Ask once, then queue: each item is downloaded, deleted in Google and uploaded again free. */
-function start(keys: string[]): boolean {
+async function ask(what: string, count: string): Promise<{ checked: boolean } | null> {
+  return confirmDialog({
+    title: `Free up ${what}?`,
+    icon: "sparkles",
+    body: [
+      `${count} in ${account}. One at a time, biggest first: each is downloaded here and checked, deleted in Google Photos (Trash included) and uploaded again for free.`,
+      "Kept: quality, date, favourite, archive and caption. Lost: albums made by hand, shared links and comments.",
+    ],
+    confirm: "Free up",
+    checkbox: { label: "Delete the downloaded copy after the upload", hint: KEEP_HINT, checked: true },
+  });
+}
+
+async function start(keys: string[]): Promise<boolean> {
   if (!keys.length) return false;
   const what = keys.length === 1 ? "this item" : `${num(keys.length)} items`;
-  if (
-    !confirm(
-      `Free up ${what} in ${account}?\n\nEach is downloaded and checked, deleted in Google Photos (Trash included) and uploaded again for free. Quality, date, favourite, archive and caption are kept; albums, shared links and comments are lost.`,
-    )
-  )
-    return false;
-  void act("download", { keys }, `Freeing ${what}`);
+  const r = await ask(what, keys.length === 1 ? "1 item" : `${num(keys.length)} items`);
+  if (!r) return false;
+  void act("download", { keys, keep: !r.checked }, `Freeing ${what}`);
   return true;
 }
 
@@ -247,12 +259,12 @@ function onClick(e: Event): void {
   else if (b.id === "st-unblock") {
     if (confirm("Google counted a re-upload against storage last time. Try again anyway?"))
       void act("check", { unblock: true });
-  } else if (b.dataset.get) start([b.dataset.get]);
+  } else if (b.dataset.get) void start([b.dataset.get]);
   else if (b.dataset.cancel) void act("cancel", { keys: [b.dataset.cancel] });
   else if (b.id === "st-picked") {
-    if (start([...picked])) picked.clear();
+    void start([...picked]).then((ok) => ok && picked.clear());
   } else if (b.id === "st-next") {
-    start(
+    void start(
       (report?.items ?? [])
         .filter((i) => !i.state && (kind === "all" || i.kind === kind))
         .slice(0, 10)
@@ -266,12 +278,10 @@ function onClick(e: Event): void {
     const k = report?.kinds;
     const n = !k ? 0 : kind === "all" ? k.photo.count + k.video.count : k[kind].count;
     const size = !k ? 0 : kind === "all" ? k.photo.bytes + k.video.bytes : k[kind].bytes;
-    if (
-      confirm(
-        `Free up all ${KIND_NAME[kind]} in ${account}: ${num(n)} items, ${bytes(size)}?\n\nOne at a time, biggest first, each is downloaded and checked, deleted in Google Photos (Trash included) and uploaded again for free. Quality, date, favourite, archive and caption are kept; albums, shared links and comments are lost. You can cancel items that haven't started.`,
-      )
-    )
-      void act("download", { kind }, `Freeing all ${KIND_NAME[kind]}`);
+    const k_ = kind;
+    void ask(`all ${KIND_NAME[k_]}`, `${num(n)} items, ${bytes(size)},`).then((r) => {
+      if (r) void act("download", { kind: k_, keep: !r.checked }, `Freeing all ${KIND_NAME[k_]}`);
+    });
   } else if (b.id === "st-more") {
     shown += 50;
     render();

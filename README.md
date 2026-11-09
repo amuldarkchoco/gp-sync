@@ -13,7 +13,7 @@ Back up any folder on your server, NAS, Immich library or Umbrel in original qua
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-5e5ce6)
 [![License: MIT](https://img.shields.io/badge/license-MIT-30d158)](LICENSE)
 
-[**Install on Umbrel**](#install-on-umbrel) · [**Run with Docker**](#run-it-anywhere) · [**Features**](#features) · [**Changelog**](CHANGELOG.md)
+[**Install on Umbrel**](#install-on-umbrel) · [**Run with Docker**](#run-it-anywhere) · [**Features**](#features) · [**⚠️ Attention**](#attention) · [**AI prompts**](docs/PROMPTS.md) · [**Changelog**](CHANGELOG.md)
 
 <br>
 
@@ -63,7 +63,40 @@ Back up any folder on your server, NAS, Immich library or Umbrel in original qua
 2. Add `https://github.com/kshanxs/kshanxs-umbrel-store` and open **kshanx's App**.
 3. Install **GP Sync**, then connect your Google account in **Settings → Google accounts**.
 
-Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
+Not on Umbrel? See [Run it anywhere](#run-it-anywhere). Or let an AI assistant do it: copy a prompt
+from [docs/PROMPTS.md](docs/PROMPTS.md) into Claude Code or Codex (laptop, server, NAS or Umbrel).
+
+## Attention
+
+> [!WARNING]
+> **Free storage depends on Google.** GP Sync uploads the way the Google Photos app does on
+> phones whose uploads don't count against storage. If Google stops honouring that, new uploads
+> start counting like any other: backups still work, but the storage isn't free. GP Sync checks:
+> **Free storage** stops as soon as Google counts one of its re-uploads, **Copy accounts** pauses,
+> and nothing is deleted in an account where GP Sync's own uploads count.
+
+- **Unofficial API.** Uploads go through [gpmc](https://github.com/xob0t/google_photos_mobile_client),
+  which talks to Google Photos like the Android app. Google could change or block it at any time.
+- **The login line is a password.** It gives full access to that account's photos. Keep it only
+  in GP Sync; the AI prompts tell assistants not to save it.
+- **Free storage and Fix dates delete items in Google Photos** before uploading them again, one at
+  a time and only after checking the copy here byte for byte. Quality, date, favourite, archive and
+  caption are kept. **Albums made by hand, shared links and comments are lost.** Items shared with
+  you, in the Trash or in the Locked folder are never touched.
+- **Downloads need space.** Free storage downloads each item to this server first (it checks the
+  free space). With "Delete the downloaded copy" turned off, copies stay under **Downloads** until
+  you delete them.
+- **iPhone Live Photos** are uploaded as a photo plus a separate 2–3 second video for now: Google
+  doesn't join the two halves when they arrive as separate files. Sending them as one Google-style
+  motion photo works (tested) and is coming next. Android motion photos (one file) are fine already.
+- **Nothing on your server is changed.** Folders are mounted read-only. Deleting a file on the
+  server doesn't delete it in Google Photos, and GP Sync never deletes files on the server (only
+  its own downloads and thumbnails in `/data`).
+- **Dates.** Photos with no date inside (Snapchat saves, screenshots, chat pictures) get the best
+  date GP Sync can find; Google Photos dates them by the upload otherwise. Days and schedule hours
+  use the time zone of the browser that last opened the dashboard.
+- **No password by default.** Without `PASSWORD`, anyone who can reach the dashboard can use it.
+  Keep it on your home network or behind a VPN such as Tailscale.
 
 ## How it works
 
@@ -90,12 +123,14 @@ Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
 - **Folders and devices:** photos, videos, size and backup progress for any folder, or per phone
   (the folders phone backup apps make), with daily arrivals and their waiting, backed-up and failed
   counts. Arrival dates are inferred from filesystem timestamps, which can change.
-- **Free storage:** lists what counts against your Google storage, biggest first. Press Free up
-  and, one at a time, GP Sync downloads an item, checks it is Google's original byte for byte,
+- **Free storage:** lists what counts against your Google storage, biggest first, photos and videos
+  apart. Free single items, the 10 biggest, or everything of a kind (photos only, videos only, or
+  both). One at a time, GP Sync downloads an item, checks it is Google's original byte for byte,
   deletes it in Google Photos (Trash included), uploads it again the free way and checks it no
   longer counts. It stops if Google counts a re-upload, and deletes nothing in an account where
-  its own uploads count. Albums, shared links and comments are not kept. This relies on the same
-  free upload as all GP Sync uploads, which Google could stop honouring.
+  its own uploads count. See [Attention](#attention).
+- **Downloads:** turn off "Delete the downloaded copy after the upload" when freeing storage, and
+  the copies are kept on the server, per account, to save to your device or delete.
 - **Fix dates:** photos and videos with no date inside (Snapchat saves, screenshots) that Google
   dated by the upload. Press Fix and GP Sync replaces each in Google Photos with one uploaded
   again with the right date, keeping favourite, archive, caption and GP Sync albums. It only
@@ -104,6 +139,13 @@ Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
   year range, from one connected Google account to another (only what the other doesn't have), in
   original quality with dates, favourites, archive and captions. Nothing is deleted in either
   account. Albums and people names don't come over: the connected login cannot list source albums.
+- **Sources:** where every photo and video came from (camera, Snapchat, Instagram, TikTok,
+  WhatsApp, Telegram, screenshot or "saved from an app"), with the evidence. Items saved from apps
+  can go into an album per app, get a searchable caption, or be archived. Snapchat saves get an
+  estimated date worked out from your own camera photos.
+- **Settings in one place:** Backup (sync, folders, Google accounts), Google Photos (albums,
+  dates, sources, duplicates, tools) and App. **Google accounts → Manage** checks logins, reads
+  libraries or checks dates for several accounts at once.
 - **History:** a contribution graph (like GitHub's) of photos, videos, data uploaded or network
   traffic per day, with day details, streaks and 30-day charts.
 - **Alerts:** ntfy or Telegram messages when Google rejects a login, a file fails 5 times or a
@@ -111,6 +153,7 @@ Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
 - **Overview at a glance:** progress ring, live upload/download, today, streak, CPU and memory, health badges and recent activity.
 - **Network:** speed gauges, live traffic, Google response time, data used per day.
 - **Activity:** saved for 90 days in Turso, grouped by day, with filters, search and thumbnails.
+  Each entry says what happened: uploaded, date fixed, re-uploaded free, copied, deleted in Google.
 - **Health:** version, uptime, CPU, memory and disk use of the app, free space, database sizes and a one-click check of every login.
 - **Upload from your phone:** pick, drag or take photos and videos in the dashboard (or share them
   from the Android gallery to the installed app). They're saved in the upload folder
@@ -118,8 +161,11 @@ Not on Umbrel? See [Run it anywhere](#run-it-anywhere).
   backed up to Google Photos like the rest.
 - **Insights:** total time spent uploading, average time per photo and per video, average photo and
   video size, uploads by hour and weekday, file types, largest and slowest uploads.
-- **App log:** everything the app prints is kept for 30 days in Turso, searchable, errors only, or
-  saved as a text file (Health page).
+- **App log and diagnostics:** everything the app prints is kept for 30 days in Turso, searchable,
+  errors and warnings only, or saved as a text file. **Diagnostics (JSON)** on the Health page (or
+  `gpsync diagnostics`) puts versions, checks, settings, what each worker is doing and the last
+  48 hours of log and activity in one file, without Google logins. See
+  [Command line and diagnostics](#command-line-and-diagnostics).
 - **About:** app, build and package versions, and credits for the technology used.
 - **Install as an app:** add the dashboard to a phone's home screen.
 - Sidebar on desktop, bottom tabs and a "More" menu on phones; dark and light themes.
@@ -143,15 +189,18 @@ never stop backups; if Turso can't be used, statistics fall back to SQLite autom
 | `GET /api/folders?group=folders&path=Photos&days=30&tz=330` | Counts and files added per day for a folder, or `group=devices` |
 | `GET /api/copy?src=&dst=` | What one account has that another lacks, and copying progress |
 | `GET /api/storage?account=` | What counts against Google storage, biggest first, and progress of moving it |
+| `POST /api/storage/download` | Free storage: `{"account", "keys": [...]}` or `{"account", "kind": "photo"\|"video"\|"all"}`, plus `"keep": true` to keep the copies |
+| `GET /api/downloads?account=` | Copies kept after freeing storage, per account |
+| `GET /api/diagnostics?hours=24` | Everything needed to look into a problem, as one JSON file (no logins) |
 | `GET /api/duplicates` | Groups of identical files |
 | `GET /api/health` | Version, storage, logins |
-| `GET /api/activity?kind=all&q=&before=&limit=100` | Saved activity (all, uploaded, exists, failed, system) |
+| `GET /api/activity?kind=all&q=&before=&limit=100` | Saved activity (all, uploaded, google, exists, failed, system) |
 | `GET /api/resources` | CPU, memory, disk I/O and Google response time |
 | `GET /api/settings` | Settings (secrets are never returned) |
 | `GET /api/thumb?path=Photos/x.jpg` | WebP thumbnail |
 | `GET /api/insights?tz=330` | Upload times, average sizes, busiest hours and weekdays, file types |
 | `GET /api/metrics?hours=24` | Per-minute speed, CPU, memory and Google response time (up to 14 days) |
-| `GET /api/logs?level=all&q=&before=&limit=200` | App log (`level` = all or error) |
+| `GET /api/logs?level=all&q=&before=&limit=200` | App log (`level` = all, info or error; error includes warnings) |
 | `GET /api/about` | App, build and package versions |
 | `GET /api/upload` | Whether phone uploads are possible, and free space |
 | `POST /api/upload?name=IMG_1.jpg&mtime=<ms>` | Upload one photo or video (raw file as the body) |
@@ -162,18 +211,42 @@ Each day has `photos`, `videos`, `photo_bytes`, `video_bytes`, `existing`, `fail
 
 ## Connect your Google account (once)
 
+**Easiest:** copy the [login-line prompt](docs/PROMPTS.md#get-the-google-login-line) (also in the app,
+under **Settings → Google accounts**) into Claude Code or Codex on the computer your phone is plugged
+into. It checks adb and the apps, watches the log while you sign in, and hands you the line.
+
+By hand:
+
 1. On an Android phone, install [GmsCore](https://github.com/ReVanced/GmsCore/releases) and [Google Photos ReVanced](https://github.com/j-hc/revanced-magisk-module/releases).
 2. Turn on USB debugging and connect the phone to a computer with `adb`.
 3. Run `adb logcat | grep "auth%2Fphotos.native"` (Windows: `adb logcat | FINDSTR "auth%2Fphotos.native"`).
 4. Open Google Photos ReVanced and sign in. If the account is already in GmsCore, remove it there first.
-5. Copy the text from `androidId=` to the end of the line, paste it into the app and click **Save account**.
+5. Copy the text from `androidId=` to the end of the line, paste it in **Settings → Google accounts**
+   and press **Connect**.
 
 Treat that line like a password: it gives full access to the Google Photos library.
 
-## Notes
+## Command line and diagnostics
 
-- gpmc uses an unofficial API that Google could change or block.
-- Everything the app needs is inside its Docker image; nothing is downloaded at start.
+The image has a `gpsync` command. It talks to the running app, so it is safe to use at any time:
+
+```sh
+docker exec <container> gpsync status                     # what the app is doing
+docker exec <container> gpsync diagnostics > diag.json    # one JSON file to share when something's wrong
+docker exec <container> gpsync logs --level error         # recent errors and warnings
+docker exec <container> gpsync activity --kind google     # what was fixed, freed or copied
+docker exec <container> gpsync check-login                # does each Google login still work?
+docker exec <container> gpsync refresh you@gmail.com      # read an account's Google library again
+docker exec <container> gpsync storage you@gmail.com      # what counts against its storage
+docker exec <container> gpsync free you@gmail.com --kind video --keep --yes   # free storage
+docker exec <container> gpsync downloads                  # copies kept per account
+```
+
+On Umbrel the container is `kshan-gphotos-sync_web_1` (`sudo docker exec …`). Add `--json` to most
+commands for JSON. Diagnostics never include Google logins, but they do include file names and
+account addresses.
+
+Everything the app needs is inside its Docker image; nothing is downloaded at start.
 
 ## Run it anywhere
 
@@ -264,7 +337,9 @@ such as Tailscale. The network speed on the page is this container's own traffic
 
 ```text
 backend/        Python: sync engine and REST API
-  sync.py         web server, scanning and uploads
+  sync.py         web server, scanning, uploads and Google work
+  cli.py          the gpsync command
+  provenance.py   where a file came from (Sources) and Snapchat date estimates
   media.py        fingerprints and thumbnails
   notify.py       ntfy and Telegram alerts
   cache.py        Redis cache with a memory fallback
@@ -274,7 +349,7 @@ web/            TypeScript dashboard (Vite+, Tailwind CSS)
   src/views/      one file per page
   src/lib/        shared code (API, charts, icons, …)
 scripts/        dependency updater used by the release workflow
-docs/           README screenshots
+docs/           README screenshots, PROMPTS.md (AI assistant prompts)
 Dockerfile      builds web/, then the Python image
 VERSION         app version; CHANGELOG.md lists what changed
 ```
@@ -310,7 +385,7 @@ uv run pytest              # tests (build the dashboard first), including checks
   `kshanxs/gp-sync:<version>` on Docker Hub and `ghcr.io/kshanxs/gp-sync:<version>` (amd64 and arm64), tags the commit `v<version>` and makes a
   GitHub release with that version's `CHANGELOG.md` notes. The Umbrel store
   [kshanxs/kshanxs-umbrel-store](https://github.com/kshanxs/kshanxs-umbrel-store) checks for new
-  images every hour and updates itself; Umbrel then shows **Update**.
+  images on a schedule and updates itself; Umbrel then shows **Update**.
 - Every Monday it tries the newest gpmc and packages (`scripts/update_deps.py`); if every test
   passes, it releases the next patch version on its own. If anything fails, nothing is released.
 - All code and packages ship inside the image, pinned by digest in the store's

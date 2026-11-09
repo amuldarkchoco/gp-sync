@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.0
+
+- Fixed: the repeated "Could not update album … 404" error. One item missing from Google (deleted,
+  or moved to the Trash or Locked folder) made Google refuse a whole batch, so albums like Snapchat
+  were never made. Items are now checked against the library first (a replaced item is found under
+  its new key), and a refused batch is split so everything else still goes in.
+- Downloads: when freeing storage, choose "Delete the downloaded copy after the upload". Turned
+  off, the copies are kept on the server, per account, to save or delete on the new Downloads page.
+- Diagnostics: one JSON file with versions, checks, settings (no secrets), what each worker is
+  doing and the recent log and activity. Health › Diagnostics (JSON), or `gpsync diagnostics`.
+- `gpsync` command in the image: status, logs, activity, check-login, refresh, storage, free,
+  downloads and diagnostics (`docker exec <container> gpsync …`).
+- README: an Attention section (free storage depends on Google, what deleting in Google loses,
+  Live Photos and more), AI assistant prompts for the login line and for installing on a laptop,
+  server or Umbrel (docs/PROMPTS.md), and new screenshots.
+
 ## 1.4.2
 
 - Settings, regrouped: Backup (Sync, Folders, Google accounts), Google Photos (Albums, Dates,

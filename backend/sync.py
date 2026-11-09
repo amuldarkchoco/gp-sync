@@ -191,6 +191,14 @@ def db():
             PRIMARY KEY (src, dst, media_key))"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS copyjobs_state ON copyjobs(state, taken)")
+    if "keep" not in {r[1] for r in conn.execute("PRAGMA table_info(reclaim)")}:
+        conn.execute("ALTER TABLE reclaim ADD COLUMN keep INTEGER DEFAULT 0")  # keep the downloaded copy
+    # Copies kept on this server after freeing storage (Downloads page).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS downloads (
+            id INTEGER PRIMARY KEY, account TEXT NOT NULL, name TEXT, kind TEXT, size INTEGER, taken REAL,
+            path TEXT NOT NULL, media_key TEXT, added REAL)"""
+    )
     conn.execute("PRAGMA journal_mode=WAL")
     conn.commit()
     return conn
@@ -1639,9 +1647,13 @@ def album_name(path, mode):
 albums_lock = threading.Lock()  # uploads and the date worker both add to albums
 
 
-def add_to_album(client, account, name, keys):
+_album_error = [None]  # the last error add_to_album saw (album_add looks at it)
+
+
+def add_to_album(client, account, name, keys, quiet=False):
     """Add media to an album, creating it the first time (or again if it was deleted in Google
-    Photos). Returns True if it worked."""
+    Photos). Returns True if it worked. `quiet`: the caller reports failures."""
+    _album_error[0] = None
     with albums_lock:
         row = q("SELECT album_key FROM albums WHERE account=? AND name=?", (account, name))
         try:
@@ -1657,8 +1669,109 @@ def add_to_album(client, account, name, keys):
             log(f"Added {len(keys)} item(s) to album {name}", "album")
             return True
         except Exception as e:
-            log(f"Could not update album {name}: {type(e).__name__}: {e}", "error")
+            _album_error[0] = e
+            if not quiet:
+                log(f"Could not update album {name}: {type(e).__name__}: {e}", "error")
             return False
+
+
+_VISIBLE = "COALESCE(trash_timestamp, 0) = 0 AND COALESCE(is_locked, 0) = 0"
+_album_refused = {}  # (account, media key) -> when Google refused it; tried again later
+ALBUM_RETRY = 6 * 3600
+
+
+def _usable_keys(account, items):
+    """Check album items [(path, media key)] against the account's library list. A key Google no
+    longer has (the item was replaced, by Free storage for example) is swapped for the item's
+    current one, found by its fingerprint. Items gone from Google, or in its Trash or Locked folder,
+    are left out once the list was read after their upload. Returns (items to add, paths left out)."""
+    refreshed = float(meta_get(f"library_refreshed:{account}") or 0)
+    if not refreshed:
+        return items, []
+    ok = set()
+    keys = [k for _, k in items]
+    for i in range(0, len(keys), 500):
+        part = keys[i : i + 500]
+        rows = _library_rows(
+            account,
+            f"SELECT media_key FROM remote_media WHERE media_key IN ({','.join('?' * len(part))}) AND {_VISIBLE}",
+            part,
+        )
+        if rows is None:  # no list here yet
+            return items, []
+        ok |= {r[0] for r in rows}
+    missing = [p for p, k in items if k not in ok]
+    if not missing:
+        return items, []
+    info = {
+        p: (sha, up)
+        for p, sha, up in q(
+            "SELECT path, sha1, updated FROM files WHERE path IN (SELECT value FROM json_each(?))",
+            (json.dumps(missing),),
+        )
+    }
+    dedup = {p: _b64_hash(bytes.fromhex(sha)) for p, (sha, _) in info.items() if sha}
+    current = {}
+    wanted = sorted(set(dedup.values()))
+    for i in range(0, len(wanted), 500):
+        part = wanted[i : i + 500]
+        for d, k in (
+            _library_rows(
+                account,
+                f"""SELECT dedup_key, media_key FROM remote_media WHERE dedup_key IN ({",".join("?" * len(part))})
+                AND {_VISIBLE} ORDER BY is_canonical""",  # the main copy last, so it wins
+                part,
+            )
+            or []
+        ):
+            current[d] = k
+    out, gone = [], []
+    for p, k in items:
+        if k in ok:
+            out.append((p, k))
+        elif dedup.get(p) in current:
+            new = current[dedup[p]]
+            out.append((p, new))
+            q("UPDATE files SET media_key=? WHERE path=? AND media_key=?", (new, p, k))
+        elif refreshed > (info.get(p, (None, 0))[1] or 0):
+            gone.append(p)
+        else:
+            out.append((p, k))  # uploaded after the list was read: try it as it is
+    return out, gone
+
+
+def album_add(client, account, name, items):
+    """Add files [(path, media key)] to album `name`. One item Google can't find makes it refuse a
+    whole batch, so a refused batch is split to find it, and the rest still goes in.
+    Returns (paths added, paths left out, ok); ok is False when nothing could be added."""
+    now = time.time()
+    items = [(p, k) for p, k in items if now - _album_refused.get((account, k), 0) > ALBUM_RETRY]
+    items, gone = _usable_keys(account, items)
+    added, refused, calls = [], [], [0]
+
+    def put(part):
+        calls[0] += 1
+        if add_to_album(client, account, name, [k for _, k in part], quiet=True):
+            added.extend(part)
+            return
+        if outage_kind(_album_error[0]) or len(part) == 1 or calls[0] >= 24:
+            refused.extend(part)
+            return
+        put(part[: len(part) // 2])
+        put(part[len(part) // 2 :])
+
+    if items:
+        put(items)
+    err = _album_error[0]
+    if refused and (added or len(refused) < len(items)):
+        for _, k in refused:
+            _album_refused[(account, k)] = now
+        _refresh_requests.append(account)  # read the library: their current keys are found then
+        log(f"Album {name}: Google Photos couldn't find {len(refused)} item(s); trying them again later", "album")
+    ok = bool(added) or not items
+    if not ok and items and err is not None:
+        log(f"Could not update album {name}: {type(err).__name__}: {err}", "error")
+    return [p for p, _ in added], gone + [p for p, _ in refused], ok
 
 
 def flush_albums(client, account, queued):
@@ -2241,6 +2354,76 @@ def health():
     }
 
 
+def diagnostics(hours=24, limit=3000):
+    """Everything needed to look into a problem, as one JSON document: versions, checks, settings
+    (secrets left out), what each worker is doing, and the log and activity of the last `hours`.
+    Google logins are never included."""
+    since = time.time() - hours * 3600
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
+
+    def counts(rows):
+        return [dict(zip(("state", "error", "count"), r, strict=True)) for r in rows]
+
+    accs = [a for a, _ in accounts()]
+    library = {}
+    for a in accs:
+        rows = _library_rows(
+            a,
+            "SELECT COUNT(*), SUM(quota_charged_bytes > 0), SUM(is_micro_video = 1) FROM remote_media WHERE "
+            + _VISIBLE,
+        )
+        refreshed = meta_get(f"library_refreshed:{a}")
+        library[a] = {
+            "read": iso(float(refreshed)) if refreshed else None,
+            "items": rows[0][0] if rows else None,
+            "counting_against_storage": rows[0][1] if rows else None,
+            "motion_photos": rows[0][2] if rows else None,
+        }
+    return {
+        "kind": "gp-sync diagnostics",
+        "created": iso(time.time()),
+        "hours": hours,
+        "version": VERSION,
+        "commit": os.environ.get("BUILD_COMMIT", ""),
+        "health": health(),
+        "status": status_json(),
+        "settings": public_settings(),
+        "library": library,
+        "workers": {
+            "free_storage": {a: dict(t) for a, t in reclaim_state.items()},
+            "dates": {a: dict(t) for a, t in dates_state.items()},
+            "copies": {f"{s_} -> {d}": dict(t) for (s_, d), t in copy_state.items()},
+            "sources": dict(sources_state),
+            "jobs": background_jobs(),
+        },
+        "free_storage": counts(q("SELECT state, error, COUNT(*) FROM reclaim GROUP BY state, error")),
+        "copies": counts(q("SELECT state, error, COUNT(*) FROM copyjobs GROUP BY state, error")),
+        "date_fixes": counts(
+            sq("SELECT fix, error, COUNT(*) FROM media_dates WHERE fix IS NOT NULL GROUP BY fix, error")
+        ),
+        "albums": [dict(zip(("account", "name"), r, strict=True)) for r in q("SELECT account, name FROM albums")],
+        "failed_files": [
+            {"path": rel(p_), "account": a, "error": e, "attempts": n}
+            for p_, a, e, n in q(
+                "SELECT path, account, error, attempts FROM files WHERE status='failed' ORDER BY updated DESC LIMIT 200"
+            )
+        ],
+        "logs": [
+            {"time": iso(t), "level": lv, "text": x}
+            for t, lv, x in sq(
+                "SELECT time, level, text FROM logs WHERE time > ? ORDER BY time DESC LIMIT ?", (since, int(limit))
+            )
+        ],
+        "activity": [
+            {"time": iso(t), "kind": k, "text": x, "file": n}
+            for t, k, x, n in sq(
+                "SELECT time, kind, text, name FROM events WHERE time > ? ORDER BY time DESC LIMIT ?",
+                (since, int(limit)),
+            )
+        ],
+    }
+
+
 def status_json():
     st = get_settings()
     counts = dict(q("SELECT status, COUNT(*) FROM files GROUP BY status"))
@@ -2492,7 +2675,7 @@ _MOVABLE = """quota_charged_bytes > 0 AND origin = 'self' AND COALESCE(trash_tim
 RECLAIM_TYPES = {"photo": 1, "video": 2}
 
 
-def reclaim_queue_all(account, kind="all"):
+def reclaim_queue_all(account, kind="all", keep=False):
     """Queue everything that counts against storage: only photos, only videos, or both."""
     if kind not in ("all", *RECLAIM_TYPES):
         raise ValueError("kind must be photo, video or all")
@@ -2503,10 +2686,10 @@ def reclaim_queue_all(account, kind="all"):
     keys = [k for (k,) in _library_rows(account, f"SELECT media_key FROM remote_media WHERE {where}", args) or []]
     busy = {k for (k,) in q("SELECT media_key FROM reclaim WHERE account=? AND state NOT IN ('failed', 'cancelled')",
                             (account,))}  # fmt: skip
-    return reclaim_queue(account, [k for k in keys if k not in busy])
+    return reclaim_queue(account, [k for k in keys if k not in busy], keep)
 
 
-def reclaim_queue(account, keys):
+def reclaim_queue(account, keys, keep=False):
     """Ask for items to be downloaded (biggest first, one at a time)."""
     wanted = set(keys)
     rows = _library_rows(
@@ -2520,12 +2703,12 @@ def reclaim_queue(account, keys):
             continue
         q(
             """INSERT INTO reclaim (account, media_key, dedup_key, name, kind, size, quota, taken, favorite,
-                                    archived, caption, state, updated)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,'queued',?)
-               ON CONFLICT(account, media_key) DO UPDATE SET state='queued', error=''
+                                    archived, caption, state, updated, keep)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)
+               ON CONFLICT(account, media_key) DO UPDATE SET state='queued', error='', keep=excluded.keep
                WHERE state IN ('failed', 'cancelled')""",
             (account, key, dedup, name, RECLAIM_KINDS.get(kind, "photo"), size, quota, _seconds(taken),
-             int(bool(fav)), int(bool(arch)), cap or "", time.time()),
+             int(bool(fav)), int(bool(arch)), cap or "", time.time(), int(bool(keep))),
         )  # fmt: skip
         n += 1
     reclaim_wake.set()
@@ -2684,7 +2867,7 @@ def reclaim_step(make_client=None, account=None):
     make_client = make_client or _reclaim_client
     rows = q(
         """SELECT account, media_key, dedup_key, name, size, taken, state, local, favorite, archived, caption,
-                  new_key, checks FROM reclaim WHERE state IN ('queued', 'downloaded', 'in_google', 'checking')
+                  new_key, checks, keep FROM reclaim WHERE state IN ('queued', 'downloaded', 'in_google', 'checking')
                   AND (? IS NULL OR account=?)
            ORDER BY state = 'queued', quota DESC""",
         (account, account),
@@ -2700,7 +2883,7 @@ def reclaim_step(make_client=None, account=None):
             clients[account] = make_client(account)
         return clients[account]
 
-    for account, key, dedup, name, size, taken, st_, local, fav, arch, cap, new_key, checks in rows:
+    for account, key, dedup, name, size, taken, st_, local, fav, arch, cap, new_key, checks, keep in rows:
         track = reclaim_state[account]
         try:
             if st_ == "queued":
@@ -2766,6 +2949,8 @@ def reclaim_step(make_client=None, account=None):
                     log(f"Free upload didn't work for {account}: stopped freeing storage", "error")
                     alert("Freeing storage stopped", f"Google counted the new upload of {name} against storage.")
                     continue
+                if keep:  # the user wants the copy: it goes to Downloads
+                    _keep_download(account, Path(local), new_key, size, taken)
                 shutil.rmtree(Path(local).parent, ignore_errors=True)
                 _set_reclaim(account, key, "done", local="")
                 log(f"Freed {fmt_bytes(size)} of Google storage: re-uploaded {name} for free ({account})", "freed")
@@ -2872,6 +3057,73 @@ def _restore_details(client, dedup, favorite, archived, caption):
             step()
         except Exception as e:
             print(f"Free storage: couldn't restore details: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+
+DOWNLOADS_DIR = DATA / "downloads"
+
+
+def _keep_download(account, path, media_key, size, taken):
+    """Move a freed item's downloaded copy into Downloads (per account and year), keeping its name."""
+    if not path.is_file():
+        return
+    year = time.strftime("%Y", time.gmtime(taken)) if taken else "undated"
+    folder = DOWNLOADS_DIR / account / year
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / path.name
+    n = 1
+    while target.exists():
+        target = folder / f"{path.stem} ({n}){path.suffix}"
+        n += 1
+    shutil.move(str(path), target)
+    kind = "video" if path.suffix.lower().lstrip(".") in VIDEO_EXTS else "photo"
+    q(
+        "INSERT INTO downloads (account, name, kind, size, taken, path, media_key, added) VALUES (?,?,?,?,?,?,?,?)",
+        (account, target.name, kind, size, taken, str(target), media_key, time.time()),
+    )
+
+
+def downloads_report(account="", limit=500):
+    """Copies kept on this server, per account, newest first."""
+    totals = {}
+    for acc, kind, n, b in q("SELECT account, kind, COUNT(*), SUM(size) FROM downloads GROUP BY account, kind"):
+        t = totals.setdefault(acc, {"photos": 0, "videos": 0, "bytes": 0})
+        t["videos" if kind == "video" else "photos"] += n
+        t["bytes"] += b or 0
+    rows = q(
+        """SELECT id, account, name, kind, size, taken, added FROM downloads WHERE (? = '' OR account = ?)
+           ORDER BY added DESC LIMIT ?""",
+        (account, account, int(limit)),
+    )
+    return {
+        "folder": str(DOWNLOADS_DIR),
+        "accounts": totals,
+        "items": [dict(zip(("id", "account", "name", "kind", "size", "taken", "added"), r, strict=True)) for r in rows],
+    }
+
+
+def downloads_delete(ids=None, account=None):
+    """Delete kept copies (by id, or all of one account). Never touches Google."""
+    if ids:
+        rows = q(
+            "SELECT id, path FROM downloads WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps([int(i) for i in ids]),),
+        )
+    elif account:
+        rows = q("SELECT id, path FROM downloads WHERE account=?", (account,))
+    else:
+        rows = []
+    for i, path in rows:
+        with contextlib.suppress(OSError):
+            Path(path).unlink()
+        q("DELETE FROM downloads WHERE id=?", (i,))
+    return {"deleted": len(rows)}
+
+
+def download_path(i):
+    """The file of one kept copy, if it is still there."""
+    rows = q("SELECT path FROM downloads WHERE id=?", (int(i),))
+    p = Path(rows[0][0]) if rows else None
+    return p if p and p.is_file() and DOWNLOADS_DIR in p.parents else None
 
 
 def refresh_library(account, make_client=None):
@@ -3178,11 +3430,12 @@ def undated_album_step(make_client=None):
         client = (make_client or _reclaim_client)(account)
         for i in range(0, min(len(items), 1000), 100):
             chunk = items[i : i + 100]
-            if not add_to_album(client, account, cfg["name"], [k for _, k in chunk]):
-                return did
-            for path, _ in chunk:
+            added, _left_out, ok = album_add(client, account, cfg["name"], chunk)
+            for path in added:
                 sq("INSERT OR REPLACE INTO undated_album VALUES (?,?,?)", (path, account, cfg["name"]))
-            did = True
+            did = did or bool(added)
+            if not ok:
+                return did
     return did
 
 
@@ -3612,11 +3865,12 @@ def sources_step(make_client=None):
                         return True
                     chunk = todo[i : i + SOURCE_BATCH]
                     calls += 1
-                    if not add_to_album(api(), account, name, [k for _, k in chunk]):
+                    added, _left_out, ok = album_add(api(), account, name, chunk)
+                    _set_sources("album", name, added)
+                    did = did or bool(added)
+                    if not ok:
                         sources_state["error"] = f"Could not add to the album {name}"
                         break
-                    _set_sources("album", name, [p for p, _ in chunk])
-                    did = True
             # Archive and unarchive (needs the file's fingerprint, made while idle).
             for want in (True, False):
                 todo = [
@@ -4709,6 +4963,16 @@ class Handler(BaseHTTPRequestHandler):
             self.json(resources_json())
         elif path == "/api/health":
             self.json(health())
+        elif path == "/api/diagnostics":
+            body = json.dumps(diagnostics(arg("hours", 24, 1, 24 * 30)), indent=1).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header(
+                "Content-Disposition", f'attachment; filename="gp-sync-diagnostics-{time.strftime("%Y%m%d-%H%M")}.json"'
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif path == "/api/thumb":
             self.image("thumb", arg("path", ""), thumbnail)
         elif path == "/api/insights":
@@ -4738,6 +5002,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_file(
                     target, MEDIA_TYPES.get(ext(target.name), "application/octet-stream"), arg("download", "")
                 )
+            else:
+                self.send(404, "{}")
+        elif path == "/api/downloads":
+            self.json(downloads_report(arg("account", "")))
+        elif path == "/api/downloads/file":
+            target = download_path(arg("id", 0, 0, 2**62))
+            if target:
+                self.send_file(target, MEDIA_TYPES.get(ext(target.name), "application/octet-stream"), "1")
             else:
                 self.send(404, "{}")
         elif path == "/api/stream":
@@ -4885,6 +5157,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(copy_retry(src, dst))
             else:
                 self.send(404, "{}")
+        elif path == "/api/downloads/delete":
+            try:
+                req = json.loads(body or "{}")
+                ids = [int(i) for i in req.get("ids") or []][:5000]
+                self.json(downloads_delete(ids, str(req.get("account") or "") or None))
+            except (ValueError, TypeError, AttributeError):
+                self.json({"error": "bad request"}, 400)
         elif path.startswith("/api/storage/"):
             try:
                 req = json.loads(body or "{}")
@@ -4899,13 +5178,14 @@ class Handler(BaseHTTPRequestHandler):
                 reclaim_wake.set()
                 self.json({"ok": True})
             elif path == "/api/storage/download":
+                keep = bool(req.get("keep"))
                 if req.get("kind") and not keys:  # everything of a kind (photo, video or all)
                     try:
-                        self.json(reclaim_queue_all(account, str(req["kind"])))
+                        self.json(reclaim_queue_all(account, str(req["kind"]), keep))
                     except ValueError as e:
                         self.json({"error": str(e)}, 400)
                 else:
-                    self.json(reclaim_queue(account, keys))
+                    self.json(reclaim_queue(account, keys, keep))
             elif path == "/api/storage/cancel":
                 self.json(reclaim_cancel(account, keys))
             elif path == "/api/storage/check":

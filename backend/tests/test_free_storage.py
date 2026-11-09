@@ -359,3 +359,21 @@ def test_activity_names_each_step(library):
     assert kinds == ["downloaded", "deleted", "freed"]
     assert [i["kind"] for i in sync.activity("google")["items"]] == ["freed", "deleted", "downloaded"]
     assert not sync.activity("uploaded")["items"]  # not counted as new uploads
+
+
+def test_keep_the_downloaded_copy(library, tmp_path, monkeypatch):
+    monkeypatch.setattr(sync, "DOWNLOADS_DIR", tmp_path / "downloads")
+    sync.q("DELETE FROM downloads")
+    client = FakeClient(library, {b64(DATA)})
+    sync.reclaim_queue(ACC, ["BIG"], keep=True)
+    for _ in range(3):
+        step(client)
+    assert sync.q("SELECT state FROM reclaim WHERE media_key='BIG'")[0][0] == "done"
+    r = sync.downloads_report()
+    assert r["accounts"] == {ACC: {"photos": 1, "videos": 0, "bytes": len(DATA)}}
+    item = r["items"][0]
+    kept = sync.download_path(item["id"])
+    assert kept.read_bytes() == DATA and kept.parent.parent.name == ACC
+    assert not (sync.RECLAIM_DIR / ACC / "BIG").exists()  # the working copy is gone
+    assert sync.downloads_delete(account=ACC) == {"deleted": 1}
+    assert not kept.exists() and sync.downloads_report()["items"] == []

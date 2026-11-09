@@ -638,3 +638,18 @@ export interface Job {
   done?: number;
   total?: number;
 }
+
+export interface DownloadItem {
+  id: number;
+  account: string;
+  name: string;
+  kind: "photo" | "video";
+  size: number;
+  taken: number | null;
+  added: number;
+}
+export interface DownloadsReport {
+  folder: string;
+  accounts: Record<string, { photos: number; videos: number; bytes: number }>;
+  items: DownloadItem[];
+}

@@ -141,7 +141,8 @@ const health: View = {
         <div class="card-h">${icon("logs", "size-4 text-ink-3")}<span>App log</span><span class="badge">Turso · 30 days</span>
           <div class="sub flex-wrap"><div class="seg" id="hl-level"><button data-l="all" aria-pressed="true">All</button><button data-l="error" aria-pressed="false">Errors</button></div>
           <input class="input h-8 w-40 sm:w-56" id="hl-q" placeholder="Search the log">
-          <button class="btn sm" id="hl-dl">${icon("download")}Save</button></div></div>
+          <button class="btn sm" id="hl-dl">${icon("download")}Save</button>
+          <a class="btn sm primary" href="api/diagnostics?hours=48" download title="Versions, checks, settings without secrets, and the last 48 hours of log and activity">${icon("code")}Diagnostics (JSON)</a></div></div>
         <div id="hl-logs" class="scroll-thin max-h-[420px] overflow-y-auto font-mono text-xs"></div>
         <div class="border-t border-line p-2 text-center"><button class="btn sm" id="hl-more">${icon("history")}Older</button></div>
       </section>

@@ -27,6 +27,7 @@ import sources from "./views/sources";
 import { askUndated } from "./lib/undated";
 import { watchSegs } from "./lib/fit-segs";
 import storage from "./views/storage";
+import downloads from "./views/downloads";
 import upload from "./views/upload";
 
 interface Route {
@@ -43,6 +44,7 @@ const ROUTES: Route[] = [
   { id: "activity", title: "Activity", ic: "activity", view: activity, group: "Backup" },
   { id: "library", title: "Library", ic: "library", view: library, group: "Backup" },
   { id: "storage", title: "Free storage", ic: "cloud", view: storage, group: "Backup" },
+  { id: "downloads", title: "Downloads", ic: "download", view: downloads, group: "Backup" },
   { id: "copy", title: "Copy accounts", ic: "users", view: copyView, group: "Backup" },
   { id: "dates", title: "Fix dates", ic: "clock", view: dates, group: "Backup" },
   { id: "sources", title: "Sources", ic: "layers", view: sources, group: "Backup" },
