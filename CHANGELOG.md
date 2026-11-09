@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.2
+
+Updated after all tests passed: lucide 1.67.0 -> 1.70.0, @tailwindcss/vite 4.3.4 -> 4.3.5, tailwindcss 4.3.4 -> 4.3.5, vite-plus 1.4.0 -> 1.5.0.
+
 ## 1.5.1
 
 - Fixed: Free storage over-counted what uses your Google storage. A photo that is also in albums is
