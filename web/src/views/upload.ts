@@ -37,6 +37,11 @@ interface PieceResult {
   error?: string;
 }
 
+interface UploadEntry {
+  file: File;
+  relDir?: string;
+}
+
 const PARALLEL = 2;
 const MAX_TRIES = 8;
 
@@ -54,18 +59,77 @@ function newId(): string {
 
 const isVideo = (f: File) => f.type.startsWith("video") || videoName(f.name);
 
-function add(files: FileList | File[]): void {
+async function readEntriesRecursively(
+  queue: { entry: any; dir: string }[],
+): Promise<UploadEntry[]> {
+  const readAllEntries = (dirReader: any): Promise<any[]> => {
+    const all: any[] = [];
+    return new Promise((resolve, reject) => {
+      const read = () => {
+        dirReader.readEntries((batch: any[]) => {
+          if (!batch || batch.length === 0) {
+            resolve(all);
+          } else {
+            all.push(...batch);
+            read();
+          }
+        }, reject);
+      };
+      read();
+    });
+  };
+
+  const getFile = (fileEntry: any): Promise<File> => {
+    return new Promise((resolve, reject) => fileEntry.file(resolve, reject));
+  };
+
+  const results: UploadEntry[] = [];
+  while (queue.length > 0) {
+    const { entry, dir } = queue.shift()!;
+    if (entry.isFile) {
+      try {
+        const file = await getFile(entry);
+        results.push({ file, relDir: dir });
+      } catch {
+        /* ignore unreadable file */
+      }
+    } else if (entry.isDirectory) {
+      try {
+        const dirReader = entry.createReader();
+        const children = await readAllEntries(dirReader);
+        const nextDir = dir ? `${dir}/${entry.name}` : entry.name;
+        for (const child of children) {
+          queue.push({ entry: child, dir: nextDir });
+        }
+      } catch {
+        /* ignore unreadable directory */
+      }
+    }
+  }
+  return results;
+}
+
+function add(files: FileList | File[] | UploadEntry[]): void {
   let skipped = 0;
-  for (const f of files) {
+  for (const item of files) {
+    const f: File = "file" in item ? item.file : item;
+    if (f.name.startsWith(".")) continue;
     if (!uploadable(f.name)) {
       skipped++;
       continue;
     }
+    const rel =
+      "relDir" in item && item.relDir
+        ? item.relDir
+        : f.webkitRelativePath
+          ? f.webkitRelativePath.split("/").slice(0, -1).join("/")
+          : "";
+    const targetFolder = rel ? (folder ? `${folder}/${rel}` : rel) : folder;
     const canShow = f.type.startsWith("image/") && !/heic|heif/i.test(f.type);
     items.push({
       id: newId(),
       file: f,
-      folder,
+      folder: targetFolder,
       state: "waiting",
       sent: 0,
       started: 0,
@@ -440,10 +504,12 @@ const upload: View = {
           <div class="flex flex-wrap justify-center gap-2">
             <!-- Labels open their file input natively: works in every phone browser and the installed app. -->
             <label for="pick" class="btn primary">${icon("library")}Choose files</label>
+            <label for="pick-folder" class="btn">${icon("folder")}Choose folder</label>
             ${cameraButtons()}
           </div>
         </div>
         <input type="file" id="pick" class="sr-only" multiple accept="image/*,video/*">
+        <input type="file" id="pick-folder" class="sr-only" webkitdirectory directory multiple>
         ${cameraInputs()}
         <div class="border-t border-line px-4 py-3" id="up-summary"></div>
       </section>
@@ -500,7 +566,29 @@ const upload: View = {
     );
     drop.addEventListener("drop", (e) => {
       e.preventDefault();
-      if (e.dataTransfer?.files.length) add(e.dataTransfer.files);
+      const dt = e.dataTransfer;
+      if (!dt) return;
+      const initialEntries: { entry: any; dir: string }[] = [];
+      if (dt.items && dt.items.length > 0) {
+        for (let i = 0; i < dt.items.length; i++) {
+          const entry = dt.items[i].webkitGetAsEntry ? dt.items[i].webkitGetAsEntry() : null;
+          if (entry) initialEntries.push({ entry, dir: "" });
+        }
+      }
+      const rawFiles = Array.from(dt.files || []);
+
+      void (async () => {
+        if (initialEntries.length > 0) {
+          const entries = await readEntriesRecursively(initialEntries);
+          if (entries.length) {
+            add(entries);
+            return;
+          }
+        }
+        if (rawFiles.length > 0) {
+          add(rawFiles);
+        }
+      })();
     });
     $("#up-list").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button");

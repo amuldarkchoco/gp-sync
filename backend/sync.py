@@ -4574,6 +4574,16 @@ def clean_name(name):
     return name[-180:]
 
 
+def clean_upload_folder(folder):
+    """Sanitize relative folder path while preserving subdirectories (e.g. Vacation/Day1)."""
+    parts = []
+    for part in str(folder or "").replace("\\", "/").split("/"):
+        clean_part = "".join(c for c in part if c.isprintable() and c not in '<>:"|?*').strip(" .")
+        if clean_part and clean_part != "..":
+            parts.append(clean_part[:100])
+    return "/".join(parts)
+
+
 def _owned(path):
     with contextlib.suppress(OSError):  # not root, or a file system without owners
         os.chown(path, *UPLOAD_OWNER)
@@ -4594,9 +4604,9 @@ def _when(mtime_ms):
 
 def _upload_folder(when, folder=""):
     """UPLOAD_DIR/<folder>/ if the user named one, else UPLOAD_DIR/<year>/<month>/."""
-    folder = clean_name(folder)
+    folder = clean_upload_folder(folder)
     if folder:
-        parts = [folder]
+        parts = [p for p in folder.split("/") if p]
     else:
         local = time.gmtime(when + get_settings()["tz_offset_min"] * 60)
         parts = [time.strftime("%Y", local), time.strftime("%m", local)]

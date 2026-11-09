@@ -20,13 +20,35 @@ def uploads(media):
     return sync.UPLOAD_DIR
 
 
-def send(server, name, data, mtime_ms=None):
-    q = urllib.parse.urlencode({"name": name, **({"mtime": mtime_ms} if mtime_ms else {})})
+def send(server, name, data, mtime_ms=None, folder=None):
+    params = {"name": name}
+    if mtime_ms:
+        params["mtime"] = mtime_ms
+    if folder:
+        params["folder"] = folder
+    q = urllib.parse.urlencode(params)
     code, body = post(f"{server}/api/upload?{q}", data)
     return code, json.loads(body or b"{}")
 
 
 # --- uploads from phones
+
+
+def test_upload_recursive_subfolders(server, uploads, monkeypatch):
+    monkeypatch.setattr(sync, "_owned", lambda p: None)
+    code, r = send(server, "pic.jpg", b"pic-bytes", folder="Vacation/Trip 2024/Day 1")
+    assert code == 200
+    assert r["saved"] == "Photos/Uploads/Vacation/Trip 2024/Day 1/pic.jpg"
+    saved = sync.MEDIA / r["saved"]
+    assert saved.exists()
+    assert saved.read_bytes() == b"pic-bytes"
+
+    # Traversal in folder parameter is sanitized safely
+    code, r = send(server, "pic2.jpg", b"pic2-bytes", folder="../../../Trip/Sub")
+    assert code == 200
+    assert r["saved"] == "Photos/Uploads/Trip/Sub/pic2.jpg"
+    saved = sync.MEDIA / r["saved"]
+    assert saved.resolve().is_relative_to(uploads.resolve())
 
 
 def test_upload_lands_in_month_folder(server, uploads, monkeypatch):
